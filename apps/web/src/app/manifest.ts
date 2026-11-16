@@ -4,18 +4,20 @@ import type { MetadataRoute } from 'next';
 export default function manifest(): MetadataRoute.Manifest {
   return {
     id: '/',
-    name: 'DailyTasks',
-    short_name: 'DailyTasks',
-    description: 'Company task management: assignments, replies, files and deadlines.',
+    // Arabic-first product name; English: "Al-Rasiyat — Task Management".
+    name: 'الراسيات — إدارة المهام',
+    short_name: 'الراسيات',
+    description: 'إدارة مهام شركة الراسيات: الإسناد والردود والملفات والمواعيد النهائية.',
     start_url: '/',
     scope: '/',
     display: 'standalone',
     display_override: ['standalone', 'minimal-ui'],
     orientation: 'any',
-    background_color: '#f6f8fb',
-    theme_color: '#ffffff',
-    lang: 'en',
-    dir: 'auto',
+    // Brand tokens (app/globals.css): canvas + logo gold.
+    background_color: '#f7f6f3',
+    theme_color: '#c0903d',
+    lang: 'ar',
+    dir: 'rtl',
     categories: ['productivity', 'business'],
     icons: [
       { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
@@ -24,8 +26,8 @@ export default function manifest(): MetadataRoute.Manifest {
       { src: '/icons/maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
     ],
     shortcuts: [
-      { name: 'My tasks', short_name: 'Tasks', url: '/tasks?view=active', icons: [{ src: '/icons/icon-192.png', sizes: '192x192' }] },
-      { name: 'Notifications', url: '/notifications', icons: [{ src: '/icons/icon-192.png', sizes: '192x192' }] },
+      { name: 'مهامي', short_name: 'المهام', url: '/tasks?view=active', icons: [{ src: '/icons/icon-192.png', sizes: '192x192' }] },
+      { name: 'الإشعارات', url: '/notifications', icons: [{ src: '/icons/icon-192.png', sizes: '192x192' }] },
     ],
   };
 }

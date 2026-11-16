@@ -4,6 +4,7 @@ import {
   TaskStatus,
   type DeadlineDuePayload,
   type PrismaClient,
+  type PushTestPayload,
   type QueueMessage,
   type ScheduleSyncPayload,
   type TaskEventPayload,
@@ -39,6 +40,12 @@ export class EventProcessor {
       case OutboxEventType.TASK_COMPLETED:
       case OutboxEventType.TASK_REOPENED:
         return this.taskEvent(msg.type, msg.payload as TaskEventPayload, msg.dedupeKey);
+      case OutboxEventType.PUSH_TEST: {
+        // Only to the requesting user (the API enqueues it for the authenticated caller).
+        const p = msg.payload as PushTestPayload;
+        await this.notifier.notify({ type: NotificationType.PUSH_TEST, recipients: [p.userId], dedupeKey: msg.dedupeKey });
+        return;
+      }
       default:
         logger.warn('unknown message type; dropping', { type: msg.type });
     }

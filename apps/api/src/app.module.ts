@@ -13,6 +13,8 @@ import { NotificationsModule } from './notifications/notifications.controller';
 import { OutboxModule } from './outbox/outbox.service';
 import { PrismaModule } from './prisma/prisma.service';
 import { ProjectsModule } from './projects/projects.controller';
+import { PushModule } from './push/push.controller';
+import { RealtimeModule } from './realtime/realtime.service';
 import { RatingsModule } from './ratings/ratings.controller';
 import { StorageModule } from './storage/storage.service';
 import { TasksModule } from './tasks/tasks.controller';
@@ -34,6 +36,8 @@ import { UsersModule } from './users/users.controller';
     TasksModule,
     RatingsModule,
     NotificationsModule,
+    PushModule,
+    RealtimeModule,
     DashboardModule,
     CompanyModule,
     HealthModule,

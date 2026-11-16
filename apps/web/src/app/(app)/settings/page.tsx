@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { InstallCard } from '@/components/install-app';
 import { useMe } from '@/components/providers';
-import { Button, Card, ErrorBox, Field, Input, PageHeader, Select } from '@/components/ui';
+import { Button, Card, ErrorBox, Field, Input, LinkButton, PageHeader, Select } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useT } from '@/lib/i18n';
 
@@ -94,7 +94,11 @@ export default function SettingsPage() {
       <PageHeader title={t('Profile & settings')} />
       <div className="grid gap-4 sm:gap-6 lg:grid-cols-2">
         <Profile />
-        <div id="install" className="scroll-mt-20">
+        <div id="install" className="scroll-mt-20 space-y-4 sm:space-y-6">
+          <Card title={t('Push notifications')}>
+            <p className="mb-3 text-sm text-slate-600">{t('Get task alerts on your phone even when Al-Rasiyat is closed.')}</p>
+            <LinkButton href="/settings/notifications">{t('Notification settings')}</LinkButton>
+          </Card>
           <InstallCard />
         </div>
         {isManager && <CompanySettings editable={me.role === 'COMPANY_ADMIN'} />}

@@ -17,7 +17,7 @@ function Step({ n, children }: { n: number; children: ReactNode }) {
 const inlineIcon = 'mx-0.5 inline h-4 w-4 align-[-3px] text-brand-700';
 
 /** Step-by-step instructions for the given platform. */
-function Steps({ platform }: { platform: Platform }) {
+export function InstallSteps({ platform }: { platform: Platform }) {
   const { t } = useT();
   if (platform === 'ios-other') {
     return (
@@ -36,7 +36,7 @@ function Steps({ platform }: { platform: Platform }) {
         <Step n={2}>
           {t('Scroll down and tap Add to Home Screen')} <PlusSquare className={inlineIcon} aria-hidden />
         </Step>
-        <Step n={3}>{t('Tap Add. Open DailyTasks from your Home Screen.')}</Step>
+        <Step n={3}>{t('Tap Add. Open Al-Rasiyat from your Home Screen.')}</Step>
       </ol>
     );
   }
@@ -46,7 +46,7 @@ function Steps({ platform }: { platform: Platform }) {
         {t('Open the browser menu')} <MoreVertical className={inlineIcon} aria-hidden />
       </Step>
       <Step n={2}>{t('Tap Install app (or Add to Home screen).')}</Step>
-      <Step n={3}>{t('Confirm. DailyTasks opens like a regular app.')}</Step>
+      <Step n={3}>{t('Confirm. Al-Rasiyat opens like a regular app.')}</Step>
     </ol>
   );
 }
@@ -72,7 +72,7 @@ export function InstallBanner() {
       <div className="flex items-start gap-3">
         <img src="/icons/icon-192.png" alt="" className="h-10 w-10 shrink-0 rounded-xl" />
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold text-slate-900">{t('Install DailyTasks on this device')}</p>
+          <p className="text-sm font-semibold text-slate-900">{t('Install Al-Rasiyat on this device')}</p>
           <p className="text-sm text-slate-500">{t('Open it from your Home Screen like an app and get task alerts.')}</p>
           <div className="mt-3 flex flex-wrap gap-2">
             {canPrompt ? (
@@ -90,7 +90,7 @@ export function InstallBanner() {
           </div>
           {showSteps && (
             <div className="mt-3">
-              <Steps platform={platform} />
+              <InstallSteps platform={platform} />
             </div>
           )}
         </div>
@@ -109,12 +109,12 @@ export function InstallCard() {
   return (
     <Card title={t('Install the app')}>
       {standalone ? (
-        <p className="flex items-center gap-2 text-sm text-emerald-700">
-          <CheckCircle2 className="h-5 w-5" aria-hidden /> {t('DailyTasks is installed and running as an app on this device.')}
+        <p className="flex items-center gap-2 text-sm text-success-700">
+          <CheckCircle2 className="h-5 w-5" aria-hidden /> {t('Al-Rasiyat is installed and running as an app on this device.')}
         </p>
       ) : (
         <div className="space-y-5">
-          <p className="text-sm text-slate-600">{t('Add DailyTasks to your Home Screen to open it full-screen, like a native app.')}</p>
+          <p className="text-sm text-slate-600">{t('Add Al-Rasiyat to your Home Screen to open it full-screen, like a native app.')}</p>
           {canPrompt && (
             <Button onClick={() => void promptInstall()} className="w-full sm:w-auto">
               <Download className="h-4 w-4" aria-hidden /> {t('Install app')}
@@ -123,11 +123,11 @@ export function InstallCard() {
           <div className="grid gap-5 sm:grid-cols-2">
             <div>
               <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('iPhone & iPad (Safari)')}</p>
-              <Steps platform={platform === 'ios-other' ? 'ios-other' : 'ios-safari'} />
+              <InstallSteps platform={platform === 'ios-other' ? 'ios-other' : 'ios-safari'} />
             </div>
             <div>
               <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('Android (Chrome)')}</p>
-              <Steps platform="android" />
+              <InstallSteps platform="android" />
             </div>
           </div>
         </div>

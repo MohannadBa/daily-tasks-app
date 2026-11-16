@@ -347,7 +347,7 @@ describe('Tasks, ratings and authorization (API)', () => {
     });
   });
 
-  describe('notifications & devices', () => {
+  describe('notifications', () => {
     it('users only see and mark their own notifications', async () => {
       const n = await ctx.prisma.notification.create({
         data: { userId: w.emp1.id, type: 'TASK_ASSIGNED', title: 't', body: 'b', dedupeKey: `k-${Date.now()}` },
@@ -356,17 +356,6 @@ describe('Tasks, ratings and authorization (API)', () => {
       expect((await api(ctx, w.emp1.id).post(`/notifications/${n.id}/read`)).status).toBe(204);
       const list = await api(ctx, w.emp2.id).get('/notifications');
       expect(list.body.items.find((i: { id: string }) => i.id === n.id)).toBeUndefined();
-    });
-
-    it('registers devices; a token moves to the latest user; supports multiple devices', async () => {
-      const t1 = `ExponentPushToken[a${Date.now()}]`;
-      const t2 = `ExponentPushToken[b${Date.now()}]`;
-      await api(ctx, w.emp1.id).post('/devices', { expoPushToken: t1, platform: 'IOS' }).expect(200);
-      await api(ctx, w.emp1.id).post('/devices', { expoPushToken: t2, platform: 'ANDROID' }).expect(200);
-      expect(await ctx.prisma.deviceInstallation.count({ where: { userId: w.emp1.id } })).toBe(2);
-      await api(ctx, w.emp2.id).post('/devices', { expoPushToken: t1, platform: 'IOS' }).expect(200);
-      expect((await ctx.prisma.deviceInstallation.findUniqueOrThrow({ where: { expoPushToken: t1 } })).userId).toBe(w.emp2.id);
-      expect((await api(ctx, w.emp1.id).post('/devices', { expoPushToken: 'not-a-token', platform: 'IOS' })).status).toBe(400);
     });
   });
 

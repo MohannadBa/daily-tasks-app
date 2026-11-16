@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { Button, Card, Empty, ErrorBox, PageHeader, Spinner, Tabs } from '@/components/ui';
+import { Button, Card, Empty, ErrorBox, LinkButton, PageHeader, Spinner, Tabs } from '@/components/ui';
 import { api } from '@/lib/api';
 import { formatRelative } from '@/lib/format';
 import { useT } from '@/lib/i18n';
@@ -33,7 +33,16 @@ export default function NotificationsPage() {
 
   return (
     <>
-      <PageHeader title={t('Notifications')} actions={<Button size="sm" variant="secondary" onClick={() => readAll.mutate()} loading={readAll.isPending}>{t('Mark all as read')}</Button>} />
+      <PageHeader title={t('Notifications')} actions={
+          <>
+            <LinkButton href="/settings/notifications" variant="secondary">
+              {t('Notification settings')}
+            </LinkButton>
+            <Button size="sm" variant="secondary" onClick={() => readAll.mutate()} loading={readAll.isPending}>
+              {t('Mark all as read')}
+            </Button>
+          </>
+        } />
       <Tabs value={filter} onChange={setFilter} items={[{ value: 'all', label: t('All') }, { value: 'unread', label: t('Unread') }]} />
       <Card>
         <ErrorBox error={list.error} />

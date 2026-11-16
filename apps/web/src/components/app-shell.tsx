@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   BarChart3,
   Bell,
+  BellRing,
   ChevronRight,
   ClipboardList,
   Download,
@@ -25,11 +26,34 @@ import { api, logout } from '@/lib/api';
 import { useT } from '@/lib/i18n';
 import { useInstallState } from '@/lib/pwa';
 import { InstallBanner } from './install-app';
+import { Logo } from './logo';
+import { RealtimeConnector, useRealtimeStatus } from './realtime';
 import { MeProvider, useMe } from './providers';
 import { Spinner } from './ui';
 
-export function AppShell({ children }: { children: ReactNode }) {
-  return <MeProvider fallback={<Spinner />}>{() => <Shell>{children}</Shell>}</MeProvider>;
+export function AppShell({ children, realtimeUrl }: { children: ReactNode; realtimeUrl?: string }) {
+  return (
+    <MeProvider fallback={<Spinner />}>
+      {() => (
+        <RealtimeConnector url={realtimeUrl}>
+          <Shell>{children}</Shell>
+        </RealtimeConnector>
+      )}
+    </MeProvider>
+  );
+}
+
+/** Small "live" indicator: green when real-time updates are connected. */
+function LiveDot() {
+  const status = useRealtimeStatus();
+  const { t } = useT();
+  const on = status === 'open';
+  return (
+    <span className="inline-flex items-center gap-1.5 text-xs text-slate-500" title={t(on ? 'Live updates on' : 'Reconnecting…')} role="status">
+      <span className={clsx('h-2 w-2 rounded-full', on ? 'bg-success-600' : 'bg-slate-300')} aria-hidden />
+      {t(on ? 'Live' : 'Offline')}
+    </span>
+  );
 }
 
 interface NavItem {
@@ -65,6 +89,12 @@ function Shell({ children }: { children: ReactNode }) {
   const isManager = isAdmin || me.managedProjectIds.length > 0;
   const unread = useQuery({ queryKey: ['notifications', 'unread'], queryFn: () => api.notifications.unreadCount(), refetchInterval: 30_000 });
   const unreadCount = unread.data?.count;
+  // Home Screen icon badge (iOS 16.4+ installed app, Chrome/Edge installed apps).
+  useEffect(() => {
+    if (unreadCount === undefined) return;
+    const nav = navigator as Navigator & { setAppBadge?: (n?: number) => Promise<void>; clearAppBadge?: () => Promise<void> };
+    (unreadCount > 0 ? nav.setAppBadge?.(unreadCount) : nav.clearAppBadge?.())?.catch(() => undefined);
+  }, [unreadCount]);
 
   const switchLanguage = () => {
     const next = locale === 'ar' ? 'en' : 'ar';
@@ -92,7 +122,8 @@ function Shell({ children }: { children: ReactNode }) {
     };
   }, [moreOpen]);
 
-  const active = (href: string) => (href === '/' ? pathname === '/' : pathname === href || pathname.startsWith(`${href}/`));
+  // '/' and '/settings' have child routes with their own nav entries, so match them exactly.
+  const active = (href: string) => (href === '/' || href === '/settings' ? pathname === href : pathname === href || pathname.startsWith(`${href}/`));
 
   const primary: NavItem[] = [
     { href: '/', label: t('Home'), icon: LayoutDashboard },
@@ -101,6 +132,7 @@ function Shell({ children }: { children: ReactNode }) {
     { href: '/notifications', label: t('Alerts'), icon: Bell, badge: unreadCount },
   ];
   const secondary: NavItem[] = [
+    { href: '/settings/notifications', label: t('Notification settings'), icon: BellRing },
     ...(isManager ? [{ href: '/employees', label: t('Employees'), icon: BarChart3 }] : []),
     ...(isAdmin ? [{ href: '/users', label: t('Team'), icon: Users }] : []),
     { href: '/settings', label: t('Profile & settings'), icon: Settings },
@@ -109,13 +141,14 @@ function Shell({ children }: { children: ReactNode }) {
     { href: '/', label: t('Dashboard'), icon: LayoutDashboard },
     { href: '/projects', label: t('Projects'), icon: FolderKanban },
     { href: '/tasks', label: t(isManager ? 'Tasks' : 'My tasks'), icon: ClipboardList },
-    ...secondary.filter((n) => n.href !== '/settings'),
+    ...secondary.filter((n) => !n.href.startsWith('/settings')),
     { href: '/notifications', label: t('Notifications'), icon: Bell, badge: unreadCount },
+    { href: '/settings/notifications', label: t('Notification settings'), icon: BellRing },
     { href: '/settings', label: t('Settings'), icon: Settings },
   ];
 
   const sectionTitle =
-    [...desktopNav, ...secondary].filter((n) => n.href !== '/' && active(n.href)).sort((a, b) => b.href.length - a.href.length)[0]?.label ?? 'DailyTasks';
+    [...desktopNav, ...secondary].filter((n) => n.href !== '/' && active(n.href)).sort((a, b) => b.href.length - a.href.length)[0]?.label ?? t('Al-Rasiyat');
   const parent = parentOf(pathname);
   const goBack = () => {
     // The installed app has no browser back button. Go back only within this app session;
@@ -131,10 +164,10 @@ function Shell({ children }: { children: ReactNode }) {
       {/* ---------- Desktop sidebar ---------- */}
       <aside className="sticky top-0 hidden h-dvh w-64 shrink-0 border-e border-slate-200 bg-white lg:block">
         <nav className="flex h-full flex-col">
-          <div className="flex items-center gap-2 px-5 py-5">
-            <img src="/icon.svg" alt="" className="h-8 w-8 rounded-lg" />
+          <div className="flex items-center gap-3 border-b border-slate-100 px-5 py-4">
+            <Logo size={44} />
             <div className="min-w-0">
-              <p className="text-sm font-semibold text-slate-900">DailyTasks</p>
+              <p className="text-sm font-semibold text-slate-900">{t('Al-Rasiyat')}</p>
               <p className="truncate text-xs text-slate-500">{me.companyName}</p>
             </div>
           </div>
@@ -157,7 +190,10 @@ function Shell({ children }: { children: ReactNode }) {
           </ul>
           <div className="border-t border-slate-200 p-4">
             <p className="truncate text-sm font-medium text-slate-900">{me.name}</p>
-            <p className="truncate text-xs text-slate-500">{t(roleLabel[me.role])}</p>
+            <p className="flex items-center justify-between gap-2 truncate text-xs text-slate-500">
+              {t(roleLabel[me.role])}
+              <LiveDot />
+            </p>
             <div className="mt-3 flex items-center justify-between">
               <button onClick={() => void logout()} className="flex items-center gap-2 text-sm text-slate-500 hover:text-slate-900">
                 <LogOut className="h-4 w-4 rtl:-scale-x-100" aria-hidden /> {t('Sign out')}
@@ -179,11 +215,11 @@ function Shell({ children }: { children: ReactNode }) {
             </button>
           ) : (
             <span className="flex h-11 w-11 items-center justify-center">
-              <img src="/icon.svg" alt="" className="h-8 w-8 rounded-lg" />
+              <Logo size={36} />
             </span>
           )}
           <div className="min-w-0 flex-1 px-1">
-            <p className="truncate text-base font-semibold text-slate-900">{pathname === '/' ? 'DailyTasks' : sectionTitle}</p>
+            <p className="truncate text-base font-semibold text-slate-900">{pathname === '/' ? t('Al-Rasiyat') : sectionTitle}</p>
             {pathname === '/' && <p className="-mt-0.5 truncate text-xs text-slate-500">{me.companyName}</p>}
           </div>
           <button onClick={switchLanguage} className="h-11 rounded-full px-3 text-sm font-medium text-slate-600 active:bg-slate-100" aria-label={t('Change language')}>

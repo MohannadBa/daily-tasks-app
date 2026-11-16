@@ -1,11 +1,12 @@
 import { createServer, type Server } from 'node:http';
-import { ensureDatabaseUrl, loadEnv, workerEnvSchema, type WorkerEnv } from '@dailytasks/config';
+import { ensureDatabaseUrl, loadEnv, parsePushHosts, workerEnvSchema, type WorkerEnv } from '@dailytasks/config';
 import { PrismaClient } from '@dailytasks/database';
 import { errMsg, logger, setLogLevel } from './logger';
-import { Notifier } from './notifier';
+import { cleanupAbandonedUploads, S3ObjectStore } from './attachments';
+import { Notifier, pushMaintenance, RetryableDeliveryError } from './notifier';
 import { OutboxRelay } from './outbox-relay';
 import { EventProcessor } from './processor';
-import { ExpoPushSender, RecordingPushSender, type PushSender } from './push';
+import { DisabledPushTransport, WebPushTransport, type PushTransport } from './push';
 import { SqsQueue, type Queue } from './queue';
 import { EventBridgeDeadlineScheduler, LocalDbScheduler, type DeadlineScheduler } from './scheduler';
 
@@ -35,7 +36,17 @@ async function loop(name: string, intervalMs: number, signal: AbortSignal, fn: (
 
 export function buildWorker(env: WorkerEnv, prisma: PrismaClient) {
   const queue: Queue = new SqsQueue(env.SQS_EVENTS_QUEUE_URL, env.AWS_REGION, env.AWS_ENDPOINT_URL);
-  const push: PushSender = env.PUSH_ENABLED ? new ExpoPushSender(prisma, env.EXPO_ACCESS_TOKEN) : new RecordingPushSender();
+  const push: PushTransport =
+    env.PUSH_ENABLED && env.WEB_PUSH_VAPID_PUBLIC_KEY && env.WEB_PUSH_VAPID_PRIVATE_KEY
+      ? new WebPushTransport({
+          publicKey: env.WEB_PUSH_VAPID_PUBLIC_KEY,
+          privateKey: env.WEB_PUSH_VAPID_PRIVATE_KEY,
+          subject: env.WEB_PUSH_SUBJECT,
+          allowedHosts: parsePushHosts(env.WEB_PUSH_ALLOWED_HOSTS),
+          allowInsecure: env.WEB_PUSH_ALLOW_INSECURE_ENDPOINTS,
+          timeoutMs: env.WEB_PUSH_TIMEOUT_MS,
+        })
+      : new DisabledPushTransport();
   const local = env.SCHEDULER_MODE === 'local' ? new LocalDbScheduler(prisma, queue) : null;
   const scheduler: DeadlineScheduler =
     local ??
@@ -48,7 +59,7 @@ export function buildWorker(env: WorkerEnv, prisma: PrismaClient) {
       },
       queue,
     );
-  const processor = new EventProcessor(prisma, new Notifier(prisma, push), scheduler);
+  const processor = new EventProcessor(prisma, new Notifier(prisma, push, env.WEB_PUSH_CONCURRENCY), scheduler);
   const relay = new OutboxRelay(prisma, queue);
   return { queue, push, local, processor, relay };
 }
@@ -79,7 +90,8 @@ async function main() {
           await queue.ack(m.receiptHandle);
         } catch (e) {
           // Not acked: SQS redelivers after the visibility timeout; after maxReceiveCount it goes to the DLQ.
-          logger.error('message processing failed', { type: m.body.type, dedupeKey: m.body.dedupeKey, receiveCount: m.receiveCount, error: errMsg(e) });
+          const log = e instanceof RetryableDeliveryError ? logger.warn : logger.error;
+          log('message processing failed', { type: m.body.type, dedupeKey: m.body.dedupeKey, receiveCount: m.receiveCount, error: errMsg(e) });
         }
       }),
     );
@@ -89,7 +101,8 @@ async function main() {
   const loops = [
     loop('outbox-relay', env.OUTBOX_POLL_INTERVAL_MS, signal, () => relay.relayBatch()),
     loop('consumer', 1000, signal, consumer),
-    loop('push-receipts', env.PUSH_RECEIPT_CHECK_INTERVAL_MS, signal, () => push.checkReceipts()),
+    loop('push-maintenance', 6 * 3600_000, signal, () => pushMaintenance(prisma)),
+    loop('attachment-cleanup', 3600_000, signal, () => cleanupAbandonedUploads(prisma, new S3ObjectStore(env.S3_BUCKET, env.AWS_REGION, env.AWS_ENDPOINT_URL, env.S3_FORCE_PATH_STYLE)).then(() => undefined)),
     loop('outbox-cleanup', 6 * 3600_000, signal, () => relay.cleanup()),
   ];
   if (local) loops.push(loop('local-scheduler', env.LOCAL_SCHEDULER_POLL_INTERVAL_MS, signal, () => local.fireDue()));
@@ -109,7 +122,8 @@ async function main() {
     }
   });
   server.listen(env.HEALTH_PORT, '0.0.0.0');
-  logger.info('worker started', { scheduler: env.SCHEDULER_MODE, push: env.PUSH_ENABLED });
+  logger.info('worker started', { scheduler: env.SCHEDULER_MODE, push: push.enabled ? 'web-push' : 'disabled' });
+  if (env.PUSH_ENABLED && !push.enabled) logger.warn('PUSH_ENABLED but VAPID keys are missing; notifications are stored but not pushed');
 
   // Graceful shutdown: stop polling, let in-flight work finish, close connections.
   const shutdown = async (sig: string) => {

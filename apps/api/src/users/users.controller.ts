@@ -1,8 +1,8 @@
-import { BadRequestException, Controller, Get, Module, NotFoundException, Param, ParseUUIDPipe, Patch, Post } from '@nestjs/common';
+import { BadRequestException, Controller, Get, HttpCode, Module, NotFoundException, Param, ParseUUIDPipe, Patch, Post } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { ProjectRole, UserRole, type User } from '@dailytasks/database';
 import type { UserDto } from '@dailytasks/shared-types';
-import { inviteUserSchema, updateUserSchema, z } from '@dailytasks/validation';
+import { adminResetPasswordSchema, inviteUserSchema, updateUserSchema, z } from '@dailytasks/validation';
 import type { AuthUser } from '../auth/auth.types';
 import { CurrentUser, Roles } from '../auth/decorators';
 import { IdentityService } from '../auth/identity.service';
@@ -75,6 +75,19 @@ export class UsersController {
     if (body.isActive !== undefined && body.isActive !== target.isActive) await this.identity.setUserEnabled(target.email, body.isActive);
     const updated = await this.prisma.user.update({ where: { id }, data: body });
     return toUserDto(updated);
+  }
+
+  /** Admin resets a user's password (Cognito: e-mailed code; local mode: temporary password). */
+  @Post(':id/reset-password')
+  @Roles(UserRole.COMPANY_ADMIN)
+  @HttpCode(200)
+  @ApiZodBody(adminResetPasswordSchema)
+  async resetPassword(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string, @ZBody(adminResetPasswordSchema) body: z.infer<typeof adminResetPasswordSchema>) {
+    const target = await this.prisma.user.findFirst({ where: { id, companyId: user.companyId } });
+    if (!target) throw new NotFoundException('User not found');
+    const r = await this.identity.adminResetPassword(target.email, body.temporaryPassword);
+    if (r.passwordHash) await this.prisma.user.update({ where: { id }, data: { passwordHash: r.passwordHash } });
+    return { mode: r.mode };
   }
 }
 

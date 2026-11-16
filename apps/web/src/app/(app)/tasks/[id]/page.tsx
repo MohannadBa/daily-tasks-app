@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useEffect, useState, type ReactNode } from 'react';
 import type { AttachmentDto, TaskDetailDto, TaskHistoryDto } from '@dailytasks/shared-types';
+import { errorText, useFeedback } from '@/components/feedback';
 import { FilePicker } from '@/components/file-picker';
 import { StarInput, Stars } from '@/components/stars';
 import { StatusBadge } from '@/components/task-table';
@@ -13,6 +14,7 @@ import { Badge, Button, Card, Empty, ErrorBox, Field, Input, Select, Spinner, Te
 import { api } from '@/lib/api';
 import { openAttachment, uploadFiles } from '@/lib/files';
 import { formatBytes, formatDateTime, formatRelative, isoToLocalInput, localInputToIso } from '@/lib/format';
+import { historyLabel } from '@/lib/history';
 import { useT } from '@/lib/i18n';
 
 function AttachmentList({ items }: { items: AttachmentDto[] }) {
@@ -48,17 +50,6 @@ function Meta({ icon, label, children }: { icon: ReactNode; label: string; child
   );
 }
 
-const historyLabel: Record<string, string> = {
-  CREATED: 'created the task',
-  UPDATED: 'updated the task',
-  DEADLINE_CHANGED: 'changed the deadline',
-  REASSIGNED: 'reassigned the task',
-  STARTED: 'started working',
-  COMMENTED: 'commented',
-  ATTACHMENT_ADDED: 'added an attachment',
-  COMPLETED: 'completed the task',
-  REOPENED: 'reopened the task',
-};
 
 function HistoryList({ items }: { items: TaskHistoryDto[] }) {
   const { t } = useT();
@@ -81,6 +72,7 @@ function HistoryList({ items }: { items: TaskHistoryDto[] }) {
 }
 
 function RatingPanel({ task }: { task: TaskDetailDto }) {
+  const { toast } = useFeedback();
   const qc = useQueryClient();
   const { t } = useT();
   const rating = useQuery({ queryKey: ['rating', task.id], queryFn: () => api.tasks.getRating(task.id) });
@@ -96,6 +88,7 @@ function RatingPanel({ task }: { task: TaskDetailDto }) {
   const save = useMutation({
     mutationFn: () => api.tasks.rate(task.id, { stars, feedback: feedback.trim() || null }),
     onSuccess: async () => {
+      toast(t('Rating saved'));
       setEditing(false);
       await Promise.all([
         qc.invalidateQueries({ queryKey: ['rating', task.id] }),
@@ -161,8 +154,9 @@ function ManagerActions({ task }: { task: TaskDetailDto }) {
   const [assigneeId, setAssigneeId] = useState('');
   const members = useQuery({ queryKey: ['members', task.projectId], queryFn: () => api.projects.members(task.projectId), enabled: mode === 'reassign' });
   const refresh = () => Promise.all([qc.invalidateQueries({ queryKey: ['task', task.id] }), qc.invalidateQueries({ queryKey: ['history', task.id] }), qc.invalidateQueries({ queryKey: ['tasks'] })]);
-  const reopen = useMutation({ mutationFn: () => api.tasks.reopen(task.id, { reason, deadline: localInputToIso(deadline) }), onSuccess: () => { setMode('none'); return refresh(); } });
-  const reassign = useMutation({ mutationFn: () => api.tasks.reassign(task.id, assigneeId), onSuccess: () => { setMode('none'); return refresh(); } });
+  const { toast } = useFeedback();
+  const reopen = useMutation({ mutationFn: () => api.tasks.reopen(task.id, { reason, deadline: localInputToIso(deadline) }), onSuccess: () => { setMode('none'); toast(t('Task reopened')); return refresh(); } });
+  const reassign = useMutation({ mutationFn: () => api.tasks.reassign(task.id, assigneeId), onSuccess: () => { setMode('none'); toast(t('Task reassigned')); return refresh(); } });
 
   return (
     <div className="space-y-3">
@@ -219,9 +213,12 @@ function ReplyBox({ task, completion }: { task: TaskDetailDto; completion: boole
   const [body, setBody] = useState('');
   const [files, setFiles] = useState<File[]>([]);
   const [fileError, setFileError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<number[] | undefined>();
+  const { toast } = useFeedback();
   const send = useMutation({
     mutationFn: async () => {
-      const uploaded = files.length ? await uploadFiles(task.id, files) : [];
+      setProgress(files.length ? files.map(() => 0) : undefined);
+      const uploaded = files.length ? await uploadFiles(task.id, files, (i, f) => setProgress((p) => p?.map((v, j) => (j === i ? f : v)))) : [];
       const attachmentIds = uploaded.map((a) => a.id);
       if (completion) await api.tasks.complete(task.id, { comment: body.trim(), attachmentIds });
       else await api.tasks.addComment(task.id, { body: body.trim(), attachmentIds });
@@ -229,9 +226,13 @@ function ReplyBox({ task, completion }: { task: TaskDetailDto; completion: boole
     onSuccess: async () => {
       setBody('');
       setFiles([]);
+      toast(t(completion ? 'Task completed' : 'Reply sent'));
       await Promise.all(['task', 'comments', 'history'].map((k) => qc.invalidateQueries({ queryKey: [k, task.id] })));
       await qc.invalidateQueries({ queryKey: ['tasks'] });
+      await qc.invalidateQueries({ queryKey: ['dashboard'] });
     },
+    onError: (e) => toast(errorText(e), 'error'),
+    onSettled: () => setProgress(undefined),
   });
   return (
     <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); if (body.trim()) send.mutate(); }}>
@@ -244,8 +245,8 @@ function ReplyBox({ task, completion }: { task: TaskDetailDto; completion: boole
         placeholder={t(completion ? 'Describe the completed work (required)…' : 'Write a reply…')}
         aria-label={t(completion ? 'Completion comment' : 'Reply')}
       />
-      <FilePicker files={files} onChange={setFiles} onError={setFileError} />
-      {fileError && <p className="text-xs text-red-600">{fileError}</p>}
+      <FilePicker files={files} onChange={setFiles} onError={setFileError} progress={progress} disabled={send.isPending} />
+      {fileError && <p className="text-xs text-danger-600">{fileError}</p>}
       <div className="flex justify-end">
         <Button type="submit" loading={send.isPending} disabled={!body.trim()} className="w-full sm:w-auto">
           {completion ? (<><CheckCircle2 className="h-4 w-4" aria-hidden /> {t('Mark as completed')}</>) : t('Send reply')}
@@ -293,7 +294,7 @@ export default function TaskDetailPage() {
               </Meta>
               <Meta icon={<CheckCircle2 className="h-4 w-4" />} label={t('Completed')}>
                 {td.completedAt ? formatDateTime(td.completedAt) : '—'}
-                {td.completedLate && <span className="block text-xs text-amber-700">{t('after the deadline')}</span>}
+                {td.completedLate && <span className="block text-xs text-warning-700">{t('after the deadline')}</span>}
               </Meta>
             </div>
             {td.description ? <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-700">{td.description}</p> : <p className="text-sm text-slate-400">{t('No description')}</p>}
@@ -311,7 +312,7 @@ export default function TaskDetailPage() {
             ) : comments.data && comments.data.length > 0 ? (
               <ul className="space-y-4">
                 {comments.data.map((c) => (
-                  <li key={c.id} className={c.isCompletionNote ? 'rounded-lg border border-emerald-200 bg-emerald-50/50 p-3 sm:p-4' : 'rounded-lg bg-slate-50 p-3 sm:p-4'}>
+                  <li key={c.id} className={c.isCompletionNote ? 'rounded-lg border border-success-200 bg-success-50 p-3 sm:p-4' : 'rounded-lg bg-slate-50 p-3 sm:p-4'}>
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="text-sm font-medium text-slate-900">{c.author.name}</span>
                       <span className="text-xs text-slate-400">{formatDateTime(c.createdAt)}</span>

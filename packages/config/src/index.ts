@@ -25,6 +25,47 @@ export const ALLOWED_ATTACHMENT_TYPES: Record<string, string[]> = {
   'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['pptx'],
 };
 
+/* ------------------------------ Web Push ------------------------------ */
+
+/**
+ * Hosts of the browser push services we deliver to (suffix match). The worker POSTs to the
+ * subscription endpoint, so anything else is rejected to prevent SSRF via forged subscriptions.
+ *   Chrome/Edge(Android)/Samsung: fcm.googleapis.com · Safari/iOS: web.push.apple.com
+ *   Firefox: *.push.services.mozilla.com · Edge (Windows): *.notify.windows.com
+ */
+export const DEFAULT_PUSH_ENDPOINT_HOSTS = ['fcm.googleapis.com', 'push.apple.com', 'push.services.mozilla.com', 'notify.windows.com'];
+/** Max delivery attempts per (notification, subscription) before it is marked FAILED. */
+export const PUSH_MAX_ATTEMPTS = 5;
+/** How long push services keep an undelivered message (device offline). Reminders are stale after this. */
+export const PUSH_TTL_SECONDS = 24 * 3600;
+/** Consecutive failed deliveries after which a subscription is deactivated. */
+export const PUSH_MAX_CONSECUTIVE_FAILURES = 20;
+/** Local-development VAPID public key from docker-compose.yml. Refused in production. */
+export const DEV_VAPID_PUBLIC_KEY = 'BMW1eav9vRcXwjakWQGhbeHneaQ6NiDCI-GNmK_LI3EcGGlxknRwdVxgjOvKKQSXcZDOZb9QN5g56IgICPtAT5o';
+
+/** Parses a comma-separated host list, falling back to the defaults. */
+export function parsePushHosts(value: string | undefined): string[] {
+  const hosts = (value ?? '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean);
+  return hosts.length ? hosts : DEFAULT_PUSH_ENDPOINT_HOSTS;
+}
+
+/**
+ * True when `endpoint` points at an allowed push service. HTTPS is required unless
+ * `allowInsecure` (local fake push service in tests only).
+ */
+export function isAllowedPushEndpoint(endpoint: string, hosts: string[], allowInsecure = false): boolean {
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return false;
+  }
+  if (url.username || url.password) return false;
+  if (url.protocol !== 'https:' && !(allowInsecure && url.protocol === 'http:')) return false;
+  const host = url.hostname.toLowerCase();
+  return hosts.some((h) => host === h || host.endsWith(`.${h}`));
+}
+
 export const DEFAULT_REMINDER_OFFSETS_MINUTES = [24 * 60, 60];
 export const MAX_REMINDER_OFFSETS = 5;
 export const MAX_REMINDER_OFFSET_MINUTES = 14 * 24 * 60;
@@ -67,6 +108,12 @@ export const apiEnvSchema = z
     COGNITO_USER_POOL_ID: z.string().optional(),
     COGNITO_CLIENT_ID: z.string().optional(),
     SWAGGER_ENABLED: bool.default(true),
+    /** VAPID public key (base64url). Public by design; sent to browsers to subscribe. Empty = push disabled. */
+    WEB_PUSH_VAPID_PUBLIC_KEY: z.string().default(''),
+    /** Comma-separated push service hosts (suffix match). Defaults to the major browser push services. */
+    WEB_PUSH_ALLOWED_HOSTS: z.string().optional(),
+    /** Accept http:// endpoints (local fake push service in tests). Refused in production. */
+    WEB_PUSH_ALLOW_INSECURE_ENDPOINTS: bool.default(false),
   })
   .superRefine((env, ctx) => {
     if (env.AUTH_MODE === 'local') {
@@ -77,6 +124,7 @@ export const apiEnvSchema = z
         ctx.addIssue({ code: 'custom', path: ['AUTH_MODE'], message: 'AUTH_MODE=local is not allowed in production' });
       }
     }
+    if (env.NODE_ENV === 'production') pushProductionChecks(env, ctx);
     if (env.AUTH_MODE === 'cognito' && (!env.COGNITO_USER_POOL_ID || !env.COGNITO_CLIENT_ID)) {
       ctx.addIssue({ code: 'custom', path: ['COGNITO_USER_POOL_ID'], message: 'Cognito settings are required when AUTH_MODE=cognito' });
     }
@@ -93,12 +141,37 @@ export const workerEnvSchema = z.object({
   SCHEDULER_ROLE_ARN: z.string().optional(),
   OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(1000),
   LOCAL_SCHEDULER_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(15000),
-  PUSH_RECEIPT_CHECK_INTERVAL_MS: z.coerce.number().int().positive().default(15 * 60 * 1000),
-  /** Optional Expo access token (enhanced push security). */
-  EXPO_ACCESS_TOKEN: z.string().optional(),
+  /** Master switch. When false (or VAPID keys are missing) notifications are stored but not pushed. */
   PUSH_ENABLED: bool.default(true),
+  /** VAPID key pair (base64url). The private key comes from Secrets Manager in AWS; never stored in the DB. */
+  WEB_PUSH_VAPID_PUBLIC_KEY: z.string().default(''),
+  WEB_PUSH_VAPID_PRIVATE_KEY: z.string().default(''),
+  /** VAPID "sub" claim: mailto: or https: contact for push services. */
+  WEB_PUSH_SUBJECT: z.string().default('mailto:admin@dailytasks.local'),
+  WEB_PUSH_ALLOWED_HOSTS: z.string().optional(),
+  WEB_PUSH_ALLOW_INSECURE_ENDPOINTS: bool.default(false),
+  WEB_PUSH_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
+  /** Push requests sent in parallel. */
+  WEB_PUSH_CONCURRENCY: z.coerce.number().int().positive().max(100).default(10),
+}).superRefine((env, ctx) => {
+  if (env.NODE_ENV === 'production') pushProductionChecks(env, ctx);
+  if (env.PUSH_ENABLED && env.WEB_PUSH_VAPID_PUBLIC_KEY && !env.WEB_PUSH_VAPID_PRIVATE_KEY) {
+    ctx.addIssue({ code: 'custom', path: ['WEB_PUSH_VAPID_PRIVATE_KEY'], message: 'WEB_PUSH_VAPID_PRIVATE_KEY is required when a public key is set' });
+  }
+  if (!/^(mailto:|https:\/\/)/.test(env.WEB_PUSH_SUBJECT)) {
+    ctx.addIssue({ code: 'custom', path: ['WEB_PUSH_SUBJECT'], message: 'WEB_PUSH_SUBJECT must start with mailto: or https://' });
+  }
 });
 export type WorkerEnv = z.infer<typeof workerEnvSchema>;
+
+function pushProductionChecks(env: { WEB_PUSH_VAPID_PUBLIC_KEY: string; WEB_PUSH_ALLOW_INSECURE_ENDPOINTS: boolean }, ctx: z.RefinementCtx) {
+  if (env.WEB_PUSH_VAPID_PUBLIC_KEY === DEV_VAPID_PUBLIC_KEY) {
+    ctx.addIssue({ code: 'custom', path: ['WEB_PUSH_VAPID_PUBLIC_KEY'], message: 'The local development VAPID key must not be used in production' });
+  }
+  if (env.WEB_PUSH_ALLOW_INSECURE_ENDPOINTS) {
+    ctx.addIssue({ code: 'custom', path: ['WEB_PUSH_ALLOW_INSECURE_ENDPOINTS'], message: 'Insecure push endpoints are not allowed in production' });
+  }
+}
 
 /**
  * On ECS the RDS secret is injected as separate DB_HOST/DB_PORT/DB_USERNAME/DB_PASSWORD/DB_NAME
@@ -114,8 +187,28 @@ export function ensureDatabaseUrl(env: Record<string, string | undefined> = proc
 }
 
 /** Parse env and fail fast with a readable error that never prints secret values. */
+/**
+ * Accepted alternative names (common in Web Push guides). The canonical WEB_PUSH_* name wins
+ * when both are set. NEXT_PUBLIC_VAPID_PUBLIC_KEY is deliberately NOT used: the browser fetches
+ * the public key at runtime from GET /api/v1/push/vapid-public-key, so one web image works in
+ * every environment and keys can rotate without rebuilding.
+ */
+export const ENV_ALIASES: Record<string, string> = {
+  VAPID_PUBLIC_KEY: 'WEB_PUSH_VAPID_PUBLIC_KEY',
+  VAPID_PRIVATE_KEY: 'WEB_PUSH_VAPID_PRIVATE_KEY',
+  VAPID_SUBJECT: 'WEB_PUSH_SUBJECT',
+};
+
+export function applyEnvAliases(source: Record<string, string | undefined>): Record<string, string | undefined> {
+  const out = { ...source };
+  for (const [alias, canonical] of Object.entries(ENV_ALIASES)) {
+    if (!out[canonical] && out[alias]) out[canonical] = out[alias];
+  }
+  return out;
+}
+
 export function loadEnv<T extends z.ZodTypeAny>(schema: T, source: Record<string, string | undefined> = process.env): z.infer<T> {
-  const result = schema.safeParse(source);
+  const result = schema.safeParse(applyEnvAliases(source));
   if (!result.success) {
     const issues = result.error.issues.map((i) => `  - ${i.path.join('.')}: ${i.message}`).join('\n');
     throw new Error(`Invalid environment configuration:\n${issues}`);

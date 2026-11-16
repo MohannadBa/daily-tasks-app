@@ -2,7 +2,8 @@
 import clsx from 'clsx';
 import { Loader2 } from 'lucide-react';
 import Link from 'next/link';
-import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, SelectHTMLAttributes, TextareaHTMLAttributes } from 'react';
+import type { ComponentPropsWithRef, InputHTMLAttributes, ReactNode, SelectHTMLAttributes, TextareaHTMLAttributes } from 'react';
+import type { LucideIcon } from 'lucide-react';
 import type { TaskTone } from '@/lib/format';
 import { useT } from '@/lib/i18n';
 
@@ -13,19 +14,19 @@ export function Button({
   className,
   children,
   ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'danger' | 'ghost'; size?: 'sm' | 'md'; loading?: boolean }) {
+}: ComponentPropsWithRef<'button'> & { variant?: 'primary' | 'secondary' | 'danger' | 'ghost'; size?: 'sm' | 'md'; loading?: boolean }) {
   return (
     <button
       {...props}
       disabled={props.disabled || loading}
       className={clsx(
-        'inline-flex items-center justify-center gap-2 rounded-lg font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60',
+        'inline-flex select-none items-center justify-center gap-2 rounded-lg font-medium transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-55',
         // Touch targets: >=40px (sm) / 44px (md) on phones, compact on desktop.
         size === 'sm' ? 'min-h-10 px-3 py-1.5 text-sm lg:min-h-0' : 'min-h-11 px-4 py-2 text-[15px] sm:text-sm lg:min-h-0',
-        variant === 'primary' && 'bg-brand-600 text-white hover:bg-brand-700',
-        variant === 'secondary' && 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50',
-        variant === 'danger' && 'bg-red-600 text-white hover:bg-red-700',
-        variant === 'ghost' && 'text-slate-600 hover:bg-slate-100',
+        variant === 'primary' && 'bg-brand-600 text-white hover:bg-brand-700 active:bg-brand-800',
+        variant === 'secondary' && 'border border-slate-300 bg-white text-slate-800 hover:border-brand-300 hover:bg-brand-50 active:bg-brand-100',
+        variant === 'danger' && 'bg-danger-600 text-white hover:bg-danger-700',
+        variant === 'ghost' && 'text-slate-600 hover:bg-slate-100 active:bg-slate-200',
         className,
       )}
     >
@@ -41,7 +42,7 @@ export function LinkButton({ href, children, variant = 'primary' }: { href: stri
       href={href}
       className={clsx(
         'inline-flex min-h-11 items-center justify-center gap-2 rounded-lg px-4 py-2 text-[15px] font-medium transition sm:text-sm lg:min-h-0',
-        variant === 'primary' ? 'bg-brand-600 text-white hover:bg-brand-700' : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50',
+        variant === 'primary' ? 'bg-brand-600 text-white hover:bg-brand-700 active:bg-brand-800' : 'border border-slate-300 bg-white text-slate-800 hover:border-brand-300 hover:bg-brand-50',
       )}
     >
       {children}
@@ -51,7 +52,7 @@ export function LinkButton({ href, children, variant = 'primary' }: { href: stri
 
 export function Card({ title, actions, children, className }: { title?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string }) {
   return (
-    <section className={clsx('min-w-0 rounded-xl border border-slate-200 bg-white shadow-sm', className)}>
+    <section className={clsx('min-w-0 rounded-[var(--radius-card)] border border-slate-200 bg-white shadow-[0_1px_2px_rgba(33,31,28,0.04)]', className)}>
       {(title || actions) && (
         <header className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-3 sm:px-5">
           <h2 className="text-sm font-semibold text-slate-900">{title}</h2>
@@ -64,9 +65,9 @@ export function Card({ title, actions, children, className }: { title?: ReactNod
 }
 
 const tones: Record<TaskTone, string> = {
-  blue: 'bg-blue-50 text-blue-700 ring-blue-200',
-  amber: 'bg-amber-50 text-amber-800 ring-amber-200',
-  green: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
+  blue: 'bg-info-50 text-info-700 ring-info-200',
+  amber: 'bg-warning-50 text-warning-700 ring-warning-200',
+  green: 'bg-success-50 text-success-700 ring-success-200',
   red: 'bg-red-50 text-red-700 ring-red-200',
   gray: 'bg-slate-100 text-slate-700 ring-slate-200',
 };
@@ -103,19 +104,47 @@ export function Spinner({ label }: { label?: string }) {
   );
 }
 
+/** Shimmering placeholder while data loads (keeps layout stable instead of a spinner). */
+export function Skeleton({ className }: { className?: string }) {
+  return <span aria-hidden className={clsx('dt-skeleton block rounded-md', className)} />;
+}
+
+/** Card-shaped list placeholder. */
+export function SkeletonList({ rows = 4, className }: { rows?: number; className?: string }) {
+  const { t } = useT();
+  return (
+    <div role="status" aria-label={t('Loading…')} className={clsx('space-y-3', className)}>
+      {Array.from({ length: rows }, (_, i) => (
+        <div key={i} className="flex items-center gap-3">
+          <Skeleton className="h-9 w-9 shrink-0 rounded-full" />
+          <div className="flex-1 space-y-2">
+            <Skeleton className="h-3.5 w-2/3" />
+            <Skeleton className="h-3 w-1/3" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function ErrorBox({ error }: { error: unknown }) {
   if (!error) return null;
   const msg = error instanceof Error ? error.message : String(error);
   return (
-    <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+    <div role="alert" className="rounded-lg border border-danger-200 bg-danger-50 px-4 py-3 text-sm text-danger-700">
       {msg}
     </div>
   );
 }
 
-export function Empty({ title, children }: { title: string; children?: ReactNode }) {
+export function Empty({ title, children, icon: Icon }: { title: string; children?: ReactNode; icon?: LucideIcon }) {
   return (
-    <div className="rounded-lg border border-dashed border-slate-300 px-6 py-10 text-center">
+    <div className="flex flex-col items-center rounded-lg border border-dashed border-slate-300 px-6 py-10 text-center">
+      {Icon && (
+        <span className="mb-3 flex h-11 w-11 items-center justify-center rounded-full bg-brand-50 text-brand-600">
+          <Icon className="h-5 w-5" aria-hidden />
+        </span>
+      )}
       <p className="text-sm font-medium text-slate-700">{title}</p>
       {children && <div className="mt-2 text-sm text-slate-500">{children}</div>}
     </div>

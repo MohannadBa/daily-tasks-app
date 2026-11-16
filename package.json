@@ -20,6 +20,7 @@
     "dev:worker": "pnpm --filter @dailytasks/worker run dev",
     "dev:web": "pnpm --filter @dailytasks/web run dev",
     "test:docker": "node scripts/docker-smoke-test.mjs",
+    "push:keys": "node scripts/generate-vapid-keys.mjs",
     "cdk:synth": "pnpm --filter @dailytasks/aws-cdk run synth"
   },
   "devDependencies": {
@@ -38,6 +39,11 @@
       "bcrypt",
       "sharp",
       "unrs-resolver"
-    ]
+    ],
+    "overrides": {
+      "postcss": "^8.5.33",
+      "sharp": "^0.35.5",
+      "deepmerge-ts": "^8.0.0"
+    }
   }
 }

@@ -1,10 +1,10 @@
-import { Body, Controller, Delete, Get, HttpCode, Module, NotFoundException, Param, ParseUUIDPipe, Post } from '@nestjs/common';
+import { Controller, Get, HttpCode, Module, NotFoundException, Param, ParseUUIDPipe, Post } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import type { NotificationDto, Paginated } from '@dailytasks/shared-types';
-import { notificationListQuerySchema, registerDeviceSchema, z } from '@dailytasks/validation';
+import { notificationListQuerySchema, z } from '@dailytasks/validation';
 import type { AuthUser } from '../auth/auth.types';
 import { CurrentUser } from '../auth/decorators';
-import { ApiZodBody, ZBody, ZodValidationPipe, ZQuery } from '../common/zod';
+import { ZQuery } from '../common/zod';
 import { PrismaService } from '../prisma/prisma.service';
 
 @ApiTags('notifications')
@@ -55,29 +55,7 @@ export class NotificationsController {
     const res = await this.prisma.notification.updateMany({ where: { id, userId: user.id }, data: { readAt: new Date() } });
     if (res.count === 0) throw new NotFoundException('Notification not found');
   }
-
-  /**
-   * Registers (or moves) an Expo push token to the current user. A token belongs to one device;
-   * if another user previously logged in on that device, the token is re-bound to the new user.
-   */
-  @Post('devices')
-  @HttpCode(200)
-  @ApiZodBody(registerDeviceSchema)
-  async registerDevice(@CurrentUser() user: AuthUser, @ZBody(registerDeviceSchema) body: z.infer<typeof registerDeviceSchema>) {
-    const d = await this.prisma.deviceInstallation.upsert({
-      where: { expoPushToken: body.expoPushToken },
-      update: { userId: user.id, platform: body.platform, deviceName: body.deviceName ?? null, locale: body.locale ?? user.locale, lastSeenAt: new Date(), disabledAt: null },
-      create: { userId: user.id, expoPushToken: body.expoPushToken, platform: body.platform, deviceName: body.deviceName ?? null, locale: body.locale ?? user.locale },
-    });
-    return { id: d.id };
-  }
-
-  /** Called on logout so the device stops receiving this user's pushes. */
-  @Delete('devices')
-  @HttpCode(204)
-  async unregisterDevice(@CurrentUser() user: AuthUser, @Body(new ZodValidationPipe(z.object({ expoPushToken: z.string().min(1) }))) body: { expoPushToken: string }) {
-    await this.prisma.deviceInstallation.deleteMany({ where: { expoPushToken: body.expoPushToken, userId: user.id } });
-  }
+  // Push subscriptions live in ../push (Web Push).
 }
 
 @Module({ controllers: [NotificationsController] })

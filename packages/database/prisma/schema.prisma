@@ -58,12 +58,27 @@ enum NotificationType {
   TASK_OVERDUE
   TASK_DEADLINE_APPROACHING
   TASK_REOPENED
+  /// User-requested test push from the notification settings page.
+  PUSH_TEST
 }
 
-enum DevicePlatform {
+/// Platform a browser push subscription was created on (derived from the user agent).
+enum PushPlatform {
   IOS
   ANDROID
-  WEB
+  DESKTOP
+  OTHER
+}
+
+enum PushDeliveryStatus {
+  /// Created, not yet accepted by the push service (or a transient failure awaiting retry).
+  PENDING
+  /// Accepted by the push service (2xx). Not proof the device displayed it.
+  SENT
+  /// Permanent failure (bad request, payload too large, retries exhausted).
+  FAILED
+  /// Push service reported the subscription gone (404/410); the subscription was deactivated.
+  EXPIRED
 }
 
 enum OutboxStatus {
@@ -75,7 +90,7 @@ enum OutboxStatus {
 model Company {
   id                     String   @id @default(uuid()) @db.Uuid
   name                   String
-  timezone               String   @default("UTC")
+  timezone               String   @default("Asia/Riyadh")
   /// Minutes before a deadline at which reminders are sent. Default: 24h and 1h.
   reminderOffsetsMinutes Int[]    @default([1440, 60])
   createdAt              DateTime @default(now()) @db.Timestamptz(3)
@@ -91,7 +106,7 @@ model User {
   email        String    @unique
   name         String
   role         UserRole
-  locale       String    @default("en")
+  locale       String    @default("ar")
   isActive     Boolean   @default(true)
   /// Cognito "sub" claim (production). Null until first Cognito login links the account.
   cognitoSub   String?   @unique
@@ -111,7 +126,7 @@ model User {
   ratingsGot     TaskRating[]         @relation("RatingEmployee")
   ratingChanges  TaskRatingRevision[]
   notifications  Notification[]
-  devices        DeviceInstallation[]
+  pushSubscriptions PushSubscription[]
   historyEntries TaskHistory[]
 
   @@index([companyId, role])
@@ -292,44 +307,63 @@ model Notification {
   pushedAt  DateTime?        @db.Timestamptz(3)
   createdAt DateTime         @default(now()) @db.Timestamptz(3)
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries PushDelivery[]
 
   @@unique([userId, dedupeKey])
   @@index([userId, readAt, createdAt])
 }
 
-/// One row per app install. A user may have several devices.
-model DeviceInstallation {
-  id            String         @id @default(uuid()) @db.Uuid
-  userId        String         @db.Uuid
-  expoPushToken String         @unique
-  platform      DevicePlatform
-  deviceName    String?
-  locale        String         @default("en")
-  lastSeenAt    DateTime       @default(now()) @db.Timestamptz(3)
-  /// Set when Expo/APNs/FCM report the token as invalid; disabled tokens are never used.
-  disabledAt    DateTime?      @db.Timestamptz(3)
-  createdAt     DateTime       @default(now()) @db.Timestamptz(3)
-  updatedAt     DateTime       @updatedAt @db.Timestamptz(3)
+/// Browser Web Push subscription (one per browser/installed PWA). A user may have several.
+/// The endpoint is a capability URL and, with p256dh/auth, is never returned by the API.
+/// VAPID keys are NOT stored in the database (Secrets Manager / env).
+model PushSubscription {
+  id                 String       @id @default(uuid()) @db.Uuid
+  userId             String       @db.Uuid
+  endpoint           String       @unique
+  /// Client public key (P-256, base64url) and auth secret (16 bytes, base64url) for payload encryption.
+  p256dh             String
+  auth               String
+  userAgent          String?
+  platform           PushPlatform @default(OTHER)
+  isActive           Boolean      @default(true)
+  /// PushSubscription.expirationTime reported by the browser, if any.
+  expiresAt          DateTime?    @db.Timestamptz(3)
+  lastUsedAt         DateTime?    @db.Timestamptz(3)
+  failureCount       Int          @default(0)
+  lastFailureAt      DateTime?    @db.Timestamptz(3)
+  deactivatedAt      DateTime?    @db.Timestamptz(3)
+  deactivationReason String?
+  createdAt          DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime     @updatedAt @db.Timestamptz(3)
 
-  user    User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tickets PushTicket[]
+  user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries PushDelivery[]
 
-  @@index([userId, disabledAt])
+  @@index([userId, isActive])
 }
 
-/// Expo push ticket awaiting a delivery receipt check (used to detect invalid tokens).
-model PushTicket {
-  id                   String    @id @default(uuid()) @db.Uuid
-  ticketId             String    @unique
-  deviceInstallationId String    @db.Uuid
-  notificationId       String?   @db.Uuid
-  checkedAt            DateTime? @db.Timestamptz(3)
-  createdAt            DateTime  @default(now()) @db.Timestamptz(3)
+/// One delivery attempt record per (notification, subscription). Makes push idempotent across
+/// retries (only non-SENT rows are retried) and records the push service's answer.
+model PushDelivery {
+  id             String             @id @default(uuid()) @db.Uuid
+  notificationId String             @db.Uuid
+  subscriptionId String             @db.Uuid
+  status         PushDeliveryStatus @default(PENDING)
+  attempts       Int                @default(0)
+  /// HTTP status from the push service on the last attempt (null = network error / not tried).
+  statusCode     Int?
+  lastError      String?
+  sentAt         DateTime?          @db.Timestamptz(3)
+  createdAt      DateTime           @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime           @updatedAt @db.Timestamptz(3)
 
-  device DeviceInstallation @relation(fields: [deviceInstallationId], references: [id], onDelete: Cascade)
+  notification Notification     @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  subscription PushSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
 
-  @@index([checkedAt, createdAt])
+  @@unique([notificationId, subscriptionId])
+  @@index([subscriptionId, createdAt])
+  @@index([status, createdAt])
 }
 
 /// Transactional outbox. Written in the same DB transaction as the business change and

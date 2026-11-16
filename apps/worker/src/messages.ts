@@ -35,6 +35,7 @@ const templates: Record<Locale, Record<NotificationType, (v: Vars) => { title: s
     TASK_OVERDUE: (v) => ({ title: 'Task overdue', body: `"${v.title}" passed its deadline` }),
     TASK_DEADLINE_APPROACHING: (v) => ({ title: 'Deadline approaching', body: `"${v.title}" is due in ${v.hours}` }),
     TASK_REOPENED: (v) => ({ title: 'Task reopened', body: `"${v.title}" was reopened by ${v.actor ?? 'a manager'}` }),
+    PUSH_TEST: () => ({ title: 'Test notification', body: 'Notifications are working on this device.' }),
   },
   ar: {
     TASK_ASSIGNED: (v) => ({ title: 'مهمة جديدة', body: `${v.title} · ${v.project}` }),
@@ -48,6 +49,7 @@ const templates: Record<Locale, Record<NotificationType, (v: Vars) => { title: s
     TASK_OVERDUE: (v) => ({ title: 'مهمة متأخرة', body: `تجاوزت "${v.title}" موعدها النهائي` }),
     TASK_DEADLINE_APPROACHING: (v) => ({ title: 'اقتراب الموعد النهائي', body: `موعد "${v.title}" بعد ${v.hours}` }),
     TASK_REOPENED: (v) => ({ title: 'أعيد فتح المهمة', body: `أعاد ${v.actor ?? 'المدير'} فتح "${v.title}"` }),
+    PUSH_TEST: () => ({ title: 'إشعار تجريبي', body: 'الإشعارات تعمل على هذا الجهاز.' }),
   },
 };
 

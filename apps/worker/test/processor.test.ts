@@ -3,12 +3,12 @@ import { OutboxEventType, PrismaClient, type QueueMessage } from '@dailytasks/da
 import { Notifier } from '../src/notifier';
 import { OutboxRelay } from '../src/outbox-relay';
 import { EventProcessor } from '../src/processor';
-import { RecordingPushSender } from '../src/push';
+import { RecordingPushTransport } from '../src/push';
 import { MemoryQueue } from '../src/queue';
 import { computeDeadlineJobs, deadlineMessage, LocalDbScheduler } from '../src/scheduler';
 
 const prisma = new PrismaClient();
-let push: RecordingPushSender;
+let push: RecordingPushTransport;
 let queue: MemoryQueue;
 let scheduler: LocalDbScheduler;
 let processor: EventProcessor;
@@ -19,7 +19,7 @@ const u = () => `${Date.now()}-${n++}`;
 async function world() {
   const company = await prisma.company.create({ data: { name: 'W', reminderOffsetsMinutes: [1440, 60] } });
   const mk = (name: string, role: 'PROJECT_MANAGER' | 'EMPLOYEE' | 'COMPANY_ADMIN') =>
-    prisma.user.create({ data: { companyId: company.id, email: `${name}-${u()}@t.local`, name, role } });
+    prisma.user.create({ data: { companyId: company.id, email: `${name}-${u()}@t.local`, name, role, locale: 'en' } });
   const manager = await mk('Manager', 'PROJECT_MANAGER');
   const manager2 = await mk('Manager2', 'PROJECT_MANAGER');
   const emp = await mk('Emp', 'EMPLOYEE');
@@ -33,9 +33,11 @@ async function world() {
       { projectId: project.id, userId: emp2.id, role: 'EMPLOYEE' },
     ],
   });
-  await prisma.deviceInstallation.create({ data: { userId: emp.id, expoPushToken: `ExponentPushToken[${u()}]`, platform: 'IOS' } });
-  await prisma.deviceInstallation.create({ data: { userId: emp.id, expoPushToken: `ExponentPushToken[${u()}]`, platform: 'ANDROID' } });
-  await prisma.deviceInstallation.create({ data: { userId: manager.id, expoPushToken: `ExponentPushToken[${u()}]`, platform: 'IOS' } });
+  const sub = (userId: string, platform: 'IOS' | 'ANDROID') =>
+    prisma.pushSubscription.create({ data: { userId, endpoint: `https://fcm.googleapis.com/fcm/send/${u()}`, p256dh: `B${'A'.repeat(86)}`, auth: 'A'.repeat(22), platform } });
+  await sub(emp.id, 'IOS');
+  await sub(emp.id, 'ANDROID');
+  await sub(manager.id, 'IOS');
   const task = await prisma.task.create({
     data: { projectId: project.id, assigneeId: emp.id, createdById: manager.id, title: 'Fix door', deadline: new Date(Date.now() + 48 * 3600_000), scheduleVersion: 1 },
   });
@@ -57,7 +59,7 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 beforeEach(() => {
-  push = new RecordingPushSender();
+  push = new RecordingPushTransport();
   queue = new MemoryQueue();
   scheduler = new LocalDbScheduler(prisma, queue);
   processor = new EventProcessor(prisma, new Notifier(prisma, push), scheduler);
@@ -72,7 +74,7 @@ describe('notification fan-out', () => {
     expect(rows[0]!.userId).toBe(w.emp.id);
     expect(rows[0]!.pushedAt).not.toBeNull();
     expect(push.sent).toHaveLength(2);
-    expect(push.sent[0]!.data.url).toBe(`dailytasks://tasks/${w.task.id}`);
+    expect(push.sent[0]!.payload.url).toBe(`/tasks/${w.task.id}`);
   });
 
   it('11. duplicate events do not create duplicate notifications or pushes', async () => {

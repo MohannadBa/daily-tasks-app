@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import type { UserRole } from '@dailytasks/shared-types';
 import { useMe } from '@/components/providers';
+import { errorText, useFeedback } from '@/components/feedback';
 import { Badge, Button, Card, Empty, ErrorBox, Field, Input, PageHeader, Select, Spinner } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useT } from '@/lib/i18n';
@@ -18,13 +19,30 @@ export default function UsersPage() {
   const invite = useMutation({
     mutationFn: () => api.users.invite({ ...form, temporaryPassword: form.temporaryPassword || undefined }),
     onSuccess: () => {
+      toast(t('Invitation sent'));
       setForm({ name: '', email: '', role: 'EMPLOYEE', temporaryPassword: '' });
       return qc.invalidateQueries({ queryKey: ['users'] });
     },
   });
+  const { toast, confirm } = useFeedback();
   const update = useMutation({
     mutationFn: (v: { id: string; role?: UserRole; isActive?: boolean }) => api.users.update(v.id, { role: v.role, isActive: v.isActive }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['users'] }),
+    onSuccess: () => {
+      toast(t('Saved'));
+      return qc.invalidateQueries({ queryKey: ['users'] });
+    },
+    onError: (e) => toast(errorText(e), 'error'),
+  });
+  const [resetFor, setResetFor] = useState<{ id: string; name: string } | null>(null);
+  const [tempPassword, setTempPassword] = useState('');
+  const reset = useMutation({
+    mutationFn: (v: { id: string; temporaryPassword?: string }) => api.users.resetPassword(v.id, { temporaryPassword: v.temporaryPassword }),
+    onSuccess: (r) => {
+      setResetFor(null);
+      setTempPassword('');
+      toast(t(r.mode === 'email' ? 'A reset code was e-mailed to the user.' : 'Temporary password set.'));
+    },
+    onError: (e) => toast(errorText(e), 'error'),
   });
 
   if (me.role !== 'COMPANY_ADMIN') return <Empty title={t('Only company administrators can manage the team')} />;
@@ -50,9 +68,21 @@ export default function UsersPage() {
                       {Object.entries(roleLabel).map(([v, l]) => <option key={v} value={v}>{t(l)}</option>)}
                     </Select>
                     {u.id !== me.id && (
-                      <Button size="sm" variant={u.isActive ? 'ghost' : 'secondary'} onClick={() => update.mutate({ id: u.id, isActive: !u.isActive })}>
-                        {t(u.isActive ? 'Deactivate' : 'Activate')}
-                      </Button>
+                      <>
+                        <Button size="sm" variant="ghost" onClick={() => setResetFor({ id: u.id, name: u.name })}>
+                          {t('Reset password')}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant={u.isActive ? 'ghost' : 'secondary'}
+                          onClick={async () => {
+                            if (u.isActive && !(await confirm({ title: t('Deactivate {name}?', { name: u.name }), message: t('They are signed out everywhere and can no longer sign in. Their history is kept.'), confirmLabel: t('Deactivate'), danger: true }))) return;
+                            update.mutate({ id: u.id, isActive: !u.isActive });
+                          }}
+                        >
+                          {t(u.isActive ? 'Deactivate' : 'Activate')}
+                        </Button>
+                      </>
                     )}
                   </div>
                 </li>
@@ -60,6 +90,20 @@ export default function UsersPage() {
             </ul>
           )}
         </Card>
+        {resetFor && (
+          <Card title={t('Reset password for {name}', { name: resetFor.name })} className="lg:col-span-3">
+            <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); reset.mutate({ id: resetFor.id, temporaryPassword: tempPassword || undefined }); }}>
+              <p className="text-sm text-slate-600">{t('With Cognito the user receives a reset code by e-mail and chooses a new password on the "Forgot password" page. In local mode, set a temporary password.')}</p>
+              <Field label={t('Temporary password (local mode only)')}>
+                <Input type="password" autoComplete="new-password" value={tempPassword} onChange={(e) => setTempPassword(e.target.value)} />
+              </Field>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <Button type="submit" loading={reset.isPending}>{t('Reset password')}</Button>
+                <Button type="button" variant="ghost" onClick={() => setResetFor(null)}>{t('Cancel')}</Button>
+              </div>
+            </form>
+          </Card>
+        )}
         <Card title={t('Invite user')}>
           <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); invite.mutate(); }}>
             <ErrorBox error={invite.error} />

@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import type { LoginResponse } from '@dailytasks/shared-types';
-import { apiBase, clearSessionCookies, isSameOrigin, setSessionCookies } from '@/lib/server-session';
+import { apiBase, clearSessionCookies, clientIpHeaders, isSameOrigin, setSessionCookies } from '@/lib/server-session';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,7 +22,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ action: st
 
   const upstream = await fetch(`${apiBase()}/auth/${action}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...clientIpHeaders(req) },
     body: await req.text(),
     cache: 'no-store',
   });

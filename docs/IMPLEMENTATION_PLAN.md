@@ -10,8 +10,8 @@ Legend: ✅ done and verified · ⏳ not started · ⚠️ partial
 | 4 | Ratings, private feedback, audit, performance averages | ✅ | api tests 4–8, 14 |
 | 5 | Next.js web app (all listed screens), English/Arabic + RTL | ✅ | `next build`, web tests, manual browser check desktop + 375 px, LTR + RTL |
 | 6 | ~~Expo mobile app~~ → **installable PWA**: manifest, service worker, icons, iOS metadata, offline shell, install guide, deep links, mobile navigation (bottom tabs) and touch-optimised screens | ✅ | web tests (`pwa`, `locale`), Chrome installability check (0 errors), SW offline deep-link check, 390 px overflow check EN+AR; see docs/PWA.md |
-| 6b | Push notifications → Web Push (VAPID) | ⏳ | Worker still uses Expo Push; next phase |
-| 7 | Worker: outbox, SQS, notifications, Expo push + receipts, deadline scheduling (local + EventBridge), retries/DLQ | ✅ | worker tests 11–13; smoke test incl. real overdue alert |
+| 6b | Web Push notifications (VAPID): PushSubscription/PushDelivery, `/push/*` API, service-worker push/click, settings page, retries/expiry, CDK secret + alarm | ✅ (real devices pending) | worker push tests (real encryption + VAPID), API push e2e, SW sandbox tests, Docker smoke test with fake push service, desktop Chrome + real FCM delivery; see docs/PUSH_NOTIFICATIONS.md |
+| 7 | Worker: outbox, SQS, notifications, push delivery, deadline scheduling (local + EventBridge), retries/DLQ | ✅ | worker tests 11–13; smoke test incl. real overdue alert |
 | 8 | AWS CDK (staging/production), deployment docs, security, E2E | ✅ (not deployed) | `cdk synth`, 7 CDK assertion tests, smoke test |
 
 ## Package versions (pinned ranges)
@@ -19,14 +19,15 @@ Node 22 LTS (images), TypeScript 5.9, NestJS 11, Prisma 6.19, PostgreSQL 16, Nex
 
 ## Decisions
 * **PWA instead of a native app** (changed requirement): one responsive Next.js codebase for desktop, phone browsers and Home Screen installs. The empty `apps/mobile` Expo placeholder was removed; no shared code depended on it.
-* **Expo Push** (original choice for the native app) is still the worker's sender until the Web Push migration.
+* **Web Push** replaced Expo Push (the native app was dropped): standard VAPID Web Push via the `web-push` library for encryption/JWT, requests sent with `fetch`; per-device `PushDelivery` rows make retries idempotent; endpoint host allow-list prevents SSRF.
 * **API-proxied Cognito login** (`USER_PASSWORD_AUTH`) so every client shares one login contract; the web app keeps tokens in httpOnly cookies via the BFF.
 * **LocalStack 3.8.1** (S3 + SQS) for local AWS; deadline scheduling uses a Postgres-backed scheduler locally because EventBridge Scheduler does not fire in LocalStack.
 * **Added `packages/database`** (not in the original layout) so API and worker share one Prisma schema and event contracts.
 * Compose Postgres is published on host port **5433** to avoid clashing with a locally installed PostgreSQL.
 
 ## Remaining work
-1. **Web Push migration (Phase 6b):** VAPID keys (Secrets Manager), Web Push subscription model + endpoint (replacing Expo tokens in `DeviceInstallation` / `POST /devices`), `push` + `notificationclick` handlers in `sw.js` (open `/tasks/<id>`), `web-push` sender in the worker (410/404 → disable subscription), opt-in button (iOS requires the installed app + user gesture), remove `expo-server-sdk`, notification deep links `https://…/tasks/<id>` instead of `dailytasks://`.
+1. **Real-device push acceptance (blocker)** on a physical iPhone (iOS 16.4+) and Android phone against HTTPS staging with real VAPID keys — record in docs/REAL_DEVICE_TESTS.md.
+1a. Production readiness audit done 2026-11-16 (docs/SECURITY_AUDIT.md): HTTPS enforced, custom domain automation, per-client throttling fix, HSTS, worker tini. Recommended next: CSP, WAF, ALB access logs, RDS `verify-full`.
 2. Browser E2E (Playwright) for the web app incl. mobile viewports (API-level E2E exists).
 3. Cleanup job for abandoned `PENDING` attachments / orphaned S3 objects.
 4. Paginated scopes for very large "awaiting rating" sets (currently an id `IN` list).

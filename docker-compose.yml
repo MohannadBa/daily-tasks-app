@@ -15,6 +15,15 @@ x-aws-env: &aws-env
   SQS_EVENTS_QUEUE_URL: http://localstack:4566/000000000000/dailytasks-events
   DATABASE_URL: postgresql://${POSTGRES_USER:-dailytasks}:${POSTGRES_PASSWORD:-dailytasks}@postgres:5432/${POSTGRES_DB:-dailytasks}?schema=public
 
+# Web Push (VAPID). LOCAL DEVELOPMENT KEY PAIR ONLY — committed on purpose so `docker compose up`
+# works out of the box; production refuses this public key. Real keys: `pnpm push:keys`, then
+# AWS Secrets Manager (see docs/DEPLOYMENT.md). Override locally via .env if you like.
+x-push-env: &push-env
+  WEB_PUSH_VAPID_PUBLIC_KEY: ${WEB_PUSH_VAPID_PUBLIC_KEY:-BMW1eav9vRcXwjakWQGhbeHneaQ6NiDCI-GNmK_LI3EcGGlxknRwdVxgjOvKKQSXcZDOZb9QN5g56IgICPtAT5o}
+  # Real browser push services + host.docker.internal for the smoke test's fake push service (dev only).
+  WEB_PUSH_ALLOWED_HOSTS: ${WEB_PUSH_ALLOWED_HOSTS:-fcm.googleapis.com,push.apple.com,push.services.mozilla.com,notify.windows.com,host.docker.internal}
+  WEB_PUSH_ALLOW_INSECURE_ENDPOINTS: ${WEB_PUSH_ALLOW_INSECURE_ENDPOINTS:-true}
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -77,7 +86,7 @@ services:
     image: dailytasks-api:local
     restart: unless-stopped
     environment:
-      <<: *aws-env
+      <<: [*aws-env, *push-env]
       NODE_ENV: development
       PORT: 3000
       AUTH_MODE: local
@@ -102,12 +111,16 @@ services:
     image: dailytasks-worker:local
     restart: unless-stopped
     environment:
-      <<: *aws-env
+      <<: [*aws-env, *push-env]
       NODE_ENV: development
       SCHEDULER_MODE: local
       PUSH_ENABLED: ${PUSH_ENABLED:-true}
-      EXPO_ACCESS_TOKEN: ${EXPO_ACCESS_TOKEN:-}
+      WEB_PUSH_VAPID_PRIVATE_KEY: ${WEB_PUSH_VAPID_PRIVATE_KEY:-redly1NP9qg_UG-mnMJ7hDECSGG9cAjXq8OLDvGtvfM}
+      WEB_PUSH_SUBJECT: ${WEB_PUSH_SUBJECT:-mailto:admin@dailytasks.local}
       LOCAL_SCHEDULER_POLL_INTERVAL_MS: 5000
+    # Lets the worker reach a fake push service on the host (smoke test). Docker Desktop has this built in.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -127,6 +140,9 @@ services:
       API_INTERNAL_URL: http://api:3000/api/v1
       # Cookies are only marked Secure when served over HTTPS (AWS); plain http locally.
       COOKIE_SECURE: "false"
+      # Browser WebSocket for live updates. Locally the API is on another port; in AWS leave unset
+      # (same origin: wss://<domain>/api/v1/realtime through the ALB).
+      REALTIME_PUBLIC_URL: ${REALTIME_PUBLIC_URL:-ws://localhost:3000/api/v1/realtime}
     ports:
       - "${WEB_PORT:-3001}:3000"
     depends_on:

@@ -32,8 +32,8 @@ async function main() {
 
   await prisma.company.upsert({
     where: { id: COMPANY_ID },
-    update: {},
-    create: { id: COMPANY_ID, name: 'Acme Contracting', timezone: 'Asia/Riyadh' },
+    update: { name: 'شركة الراسيات', timezone: 'Asia/Riyadh' }, // demo data only (refused in production)
+    create: { id: COMPANY_ID, name: 'شركة الراسيات', timezone: 'Asia/Riyadh' },
   });
 
   const byEmail: Record<string, string> = {};

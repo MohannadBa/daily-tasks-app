@@ -11,6 +11,7 @@ import type {
   Paginated,
   ProjectDto,
   ProjectMemberDto,
+  PushStatusDto,
   TaskCommentDto,
   TaskDetailDto,
   TaskDto,
@@ -109,6 +110,7 @@ export function createApiClient(options: ApiClientOptions) {
     users: {
       list: (query?: { role?: string; q?: string }) => get<UserDto[]>('/users', query),
       invite: (body: { email: string; name: string; role: string; locale?: string; temporaryPassword?: string }) => post<UserDto>('/users', body),
+      resetPassword: (id: string, body: { temporaryPassword?: string }) => post<{ mode: 'email' | 'temporary' }>(`/users/${id}/reset-password`, body),
       update: (id: string, body: { name?: string; role?: string; isActive?: boolean }) => patch<UserDto>(`/users/${id}`, body),
     },
     projects: {
@@ -121,7 +123,7 @@ export function createApiClient(options: ApiClientOptions) {
       removeMember: (id: string, userId: string) => del<void>(`/projects/${id}/members/${userId}`),
     },
     tasks: {
-      list: (query?: { projectId?: string; assigneeId?: string; status?: string; view?: string; q?: string; page?: number; pageSize?: number }) =>
+      list: (query?: { projectId?: string; assigneeId?: string; status?: string; view?: string; sort?: string; q?: string; page?: number; pageSize?: number }) =>
         get<Paginated<TaskDto>>('/tasks', query),
       get: (id: string) => get<TaskDetailDto>(`/tasks/${id}`),
       create: (body: { projectId: string; assigneeId: string; title: string; description?: string; deadline: string }) => post<TaskDetailDto>('/tasks', body),
@@ -153,10 +155,15 @@ export function createApiClient(options: ApiClientOptions) {
       markRead: (id: string) => post<void>(`/notifications/${id}/read`),
       markAllRead: () => post<void>('/notifications/read-all'),
     },
-    devices: {
-      register: (body: { expoPushToken: string; platform: 'IOS' | 'ANDROID' | 'WEB'; deviceName?: string | null; locale?: 'en' | 'ar' }) =>
-        post<{ id: string }>('/devices', body),
-      unregister: (expoPushToken: string) => request<void>('DELETE', '/devices', { expoPushToken }),
+    push: {
+      vapidPublicKey: () => get<{ enabled: boolean; publicKey: string | null }>('/push/vapid-public-key'),
+      status: () => get<PushStatusDto>('/push/status'),
+      /** Body is PushSubscription.toJSON() from the browser. */
+      subscribe: (body: { endpoint: string; expirationTime?: number | null; keys: { p256dh: string; auth: string } }) =>
+        post<{ id: string; endpointHash: string }>('/push/subscribe', body),
+      unsubscribe: (body: { endpoint: string } | { id: string }) => request<void>('DELETE', '/push/unsubscribe', body),
+      /** 202 = queued for delivery, not proof of delivery. */
+      test: () => post<{ queued: boolean; subscriptions: number }>('/push/test'),
     },
     dashboard: {
       get: () => get<DashboardDto>('/dashboard'),

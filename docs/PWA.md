@@ -54,5 +54,5 @@ Bump `VERSION` in `sw.js` when its precache list or policy changes. Old `dt-*` c
 * Verified at 390×844 in English (LTR) and Arabic (RTL): login, dashboard, projects, task list, task detail (replies, attachments, completion), manager rating view, employees, new task, notifications, settings. No horizontal overflow on any screen.
 
 ## Not yet done
-* **Web Push notifications** (next phase, "notification migration"). The worker still sends via Expo Push (`apps/worker/src/push.ts`, `DeviceInstallation.expoPushToken`, `POST /devices` with an Expo token). Plan: VAPID keys, a `push`/`notificationclick` handler in `sw.js` that opens `data.url` (`/tasks/<id>`), a subscription endpoint, the `web-push` sender, and removing `expo-server-sdk`. iOS supports Web Push only for Home Screen apps (iOS 16.4+), after a user gesture.
+* Push notifications are implemented — see [PUSH_NOTIFICATIONS.md](PUSH_NOTIFICATIONS.md).
 * Offline data (read-only cached task lists) is intentionally out of scope for privacy reasons; revisit if needed.

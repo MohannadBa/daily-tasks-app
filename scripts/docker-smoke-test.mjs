@@ -4,7 +4,9 @@
  *   docker compose up -d --build && pnpm test:docker
  *
  * Exercises the real API, worker (outbox -> SQS -> notifications), LocalStack S3 pre-signed
- * uploads, the local deadline scheduler, and the web BFF login flow.
+ * uploads, the local deadline scheduler, the web BFF login flow, and Web Push: a fake push service
+ * on the host (reached by the worker via host.docker.internal) receives the real VAPID-signed,
+ * aes128gcm-encrypted pushes and decrypts them with the "browser" keys.
  * Uses the demo seed accounts (SEED_DEMO_PASSWORD, default Password123!).
  */
 const API = process.env.API_URL ?? 'http://localhost:3000/api/v1';
@@ -27,6 +29,44 @@ const assert = (cond, msg) => {
   if (!cond) throw new Error(msg);
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/* ---------------- fake push service (stands in for FCM / Apple) ---------------- */
+import { createECDH, randomBytes } from 'node:crypto';
+import { createServer } from 'node:http';
+import { createRequire } from 'node:module';
+const ece = createRequire(new URL('../apps/worker/package.json', import.meta.url))('http_ece');
+
+const pushInbox = []; // { path, headers, payload }
+const pushStatus = new Map(); // path -> status code to answer
+const pushServer = createServer((req, res) => {
+  const chunks = [];
+  req.on('data', (c) => chunks.push(c));
+  req.on('end', () => {
+    const device = devices.find((d) => req.url === d.path);
+    let payload = null;
+    if (device) {
+      try {
+        payload = JSON.parse(ece.decrypt(Buffer.concat(chunks), { version: 'aes128gcm', privateKey: device.ecdh, authSecret: device.auth }).toString('utf8'));
+      } catch (e) {
+        payload = { decryptError: e.message };
+      }
+    }
+    pushInbox.push({ path: req.url, headers: req.headers, payload });
+    res.writeHead(pushStatus.get(req.url) ?? 201).end();
+  });
+});
+await new Promise((r) => pushServer.listen(0, '0.0.0.0', r));
+const PUSH_HOST = process.env.SMOKE_PUSH_HOST ?? 'host.docker.internal';
+const pushBase = `http://${PUSH_HOST}:${pushServer.address().port}`;
+const devices = [];
+function fakeDevice(name) {
+  const ecdh = createECDH('prime256v1');
+  ecdh.generateKeys();
+  const d = { name, ecdh, auth: randomBytes(16).toString('base64url'), path: `/push/${name}-${Date.now()}` };
+  devices.push(d);
+  return { d, subscription: { endpoint: `${pushBase}${d.path}`, expirationTime: null, keys: { p256dh: ecdh.getPublicKey().toString('base64url'), auth: d.auth } } };
+}
+process.on('exit', () => pushServer.close());
 
 async function call(token, method, path, body) {
   const res = await fetch(`${API}${path}`, {
@@ -86,6 +126,21 @@ await step('web BFF login sets httpOnly cookies and proxies the API', async () =
   assert(cross.status === 403, 'cross-origin mutation must be rejected');
 });
 
+let phone, oldPhone;
+await step('employee enables Web Push on two devices (one will report 410 Gone)', async () => {
+  const key = await call(null, 'GET', '/push/vapid-public-key');
+  assert(key.status === 200 && key.body.enabled && key.body.publicKey, 'VAPID public key served');
+  phone = fakeDevice('phone');
+  oldPhone = fakeDevice('old-phone');
+  pushStatus.set(oldPhone.d.path, 410);
+  for (const dev of [phone, oldPhone]) {
+    const r = await call(employee.accessToken, 'POST', '/push/subscribe', dev.subscription);
+    assert(r.status === 201, `subscribe ${r.status} ${JSON.stringify(r.body)}`);
+  }
+  const evil = await call(employee.accessToken, 'POST', '/push/subscribe', { ...phone.subscription, endpoint: 'https://evil.example.com/push/x' });
+  assert(evil.status === 400, 'non push-service endpoint must be rejected');
+});
+
 await step('manager creates a task (deadline in 90 minutes)', async () => {
   const projectId = manager.user.managedProjectIds[0];
   const r = await call(manager.accessToken, 'POST', '/tasks', {
@@ -104,6 +159,23 @@ await step('worker delivers TASK_ASSIGNED notification to the employee (outbox -
     const r = await call(employee.accessToken, 'GET', '/notifications?pageSize=50');
     return r.body.items.find((n) => n.taskId === task.id && n.type === 'TASK_ASSIGNED');
   }, 'TASK_ASSIGNED notification');
+});
+
+await step('worker sends an encrypted Web Push the device can decrypt; 410 device is deactivated', async () => {
+  const got = await waitFor(() => pushInbox.find((m) => m.path === phone.d.path && m.payload?.taskId === task.id), 'push at the fake push service');
+  assert(got.payload.type === 'TASK_ASSIGNED', `payload type ${got.payload.type}`);
+  assert(got.payload.url === `/tasks/${task.id}`, `deep link ${got.payload.url}`);
+  assert(got.payload.title && got.payload.body, 'title and body present');
+  assert(String(got.headers.authorization).startsWith('vapid t='), 'VAPID Authorization header');
+  assert(got.headers['content-encoding'] === 'aes128gcm', 'aes128gcm encoding');
+  assert(Number(got.headers.ttl) > 0, 'TTL header');
+  const status = await waitFor(async () => {
+    const r = await call(employee.accessToken, 'GET', '/push/status');
+    const inactive = r.body.subscriptions.find((s) => !s.isActive && s.deactivationReason === 'push service returned 410');
+    const sent = r.body.subscriptions.find((s) => s.isActive && s.lastDelivery?.status === 'SENT' && s.lastDelivery.statusCode === 201);
+    return inactive && sent ? r.body : null;
+  }, 'delivery status: one SENT, one deactivated');
+  assert(!JSON.stringify(status).includes(phone.subscription.keys.auth), 'status never exposes subscription secrets');
 });
 
 await step('other employee cannot see the task', async () => {
@@ -184,11 +256,28 @@ await step('deadline passes -> local scheduler + worker send TASK_OVERDUE to emp
   }
 });
 
+await step('test notification goes through the outbox to this user only; duplicates suppressed', async () => {
+  const before = pushInbox.length;
+  const r = await call(employee.accessToken, 'POST', '/push/test');
+  assert(r.status === 202 && r.body.queued, `test push ${r.status}`);
+  const got = await waitFor(() => pushInbox.slice(before).find((m) => m.payload?.type === 'PUSH_TEST'), 'PUSH_TEST push');
+  assert(got.path === phone.d.path, 'delivered to the active device');
+  assert(got.payload.url === '/settings/notifications', 'test push deep link');
+  await sleep(3000);
+  const tests = pushInbox.slice(before).filter((m) => m.payload?.type === 'PUSH_TEST');
+  assert(tests.length === 1, `exactly one test push, got ${tests.length}`);
+  assert(!pushInbox.slice(before).some((m) => m.path === oldPhone.d.path), 'deactivated device not used again');
+  const un = await call(employee.accessToken, 'DELETE', '/push/unsubscribe', { endpoint: phone.subscription.endpoint });
+  assert(un.status === 204, `unsubscribe ${un.status}`);
+});
+
 await step('Swagger/OpenAPI document is served', async () => {
   const r = await fetch(API.replace('/api/v1', '/api/docs-json'));
   assert(r.ok, `swagger ${r.status}`);
   const doc = await r.json();
   assert(doc.paths['/api/v1/tasks'], 'tasks path documented');
+  assert(doc.paths['/api/v1/push/subscribe'], 'push paths documented');
 });
 
 console.info(`\nAll ${passed} smoke-test steps passed.`);
+pushServer.close();

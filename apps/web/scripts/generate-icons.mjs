@@ -1,7 +1,11 @@
-// Renders the PWA / home-screen icons from public/icon.svg.
-//   node scripts/generate-icons.mjs        (run from apps/web; output is committed)
-// "any" icons keep the rounded-square artwork. Maskable and Apple icons are full-bleed squares
-// (Android masks them, iOS rounds them) with the artwork scaled into the safe zone.
+// Generates every brand image from the official Al-Rasiyat logo.   node scripts/generate-icons.mjs  (in apps/web)
+//
+// Inputs (committed):
+//   assets/brand/alrasiyat-logo-source.jpeg  official raster logo (gold #C0903D on white)
+//   public/brand/logo-mark.svg              vector trace of the mark + Arabic wordmark (no Latin line)
+// Outputs (committed): app icons (any + maskable), apple-touch-icon, favicon, monochrome badge,
+//   icon.svg. The full lockup is the mark + "ALRASIYAT" set in type (components/logo.tsx). Replace logo-mark.svg with an official vector when one
+//   is available and re-run this script.
 import { readFile, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
@@ -12,33 +16,44 @@ const sharp = require('sharp');
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pub = path.join(root, 'public');
-const svg = await readFile(path.join(pub, 'icon.svg'), 'utf8');
+const GOLD = '#C0903D';
+const mark = await readFile(path.join(pub, 'brand/logo-mark.svg'), 'utf8');
+const [, vw, vh] = /viewBox="0 0 (\d+(?:\.\d+)?) (\d+(?:\.\d+)?)"/.exec(mark).map(Number);
+const markInner = mark.replace(/^[\s\S]*?<svg[^>]*>/, '').replace(/<\/svg>\s*$/, '');
 
-/** Full-bleed square: gradient background, inner artwork (without its own rounded background) scaled to `scale`. */
-function fullBleed(scale) {
-  const inner = svg
-    .replace(/<rect width="512" height="512" rx="112" fill="url\(#g\)"\/>/, '')
-    .replace(/^<svg[^>]*>/, '')
-    .replace(/<\/svg>\s*$/, '');
-  const offset = (512 * (1 - scale)) / 2;
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2f7cf6"/><stop offset="1" stop-color="#1a4fb5"/></linearGradient></defs>
-  <rect width="512" height="512" fill="url(#bg)"/>
-  <g transform="translate(${offset} ${offset}) scale(${scale})">${inner}</g>
-</svg>`;
+/** Square canvas with the mark centred at `scale` of the width. */
+function square({ bg, scale, color = GOLD, radius = 0 }) {
+  const size = 1024;
+  const w = size * scale;
+  const h = (w * vh) / vw;
+  const x = (size - w) / 2;
+  const y = (size - h) / 2;
+  const inner = markInner.replace(/fill="[^"]*"/g, `fill="${color}"`);
+  const rect = bg ? `<rect width="${size}" height="${size}" rx="${radius}" fill="${bg}"/>` : '';
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}">${rect}<svg x="${x}" y="${y}" width="${w}" height="${h}" viewBox="0 0 ${vw} ${vh}">${inner}</svg></svg>`;
 }
 
+const render = (svg, size) => sharp(Buffer.from(svg), { density: 300 }).resize(size, size).png({ compressionLevel: 9 }).toBuffer();
+
 const targets = [
-  { file: 'icons/icon-192.png', size: 192, src: svg },
-  { file: 'icons/icon-512.png', size: 512, src: svg },
-  { file: 'icons/maskable-192.png', size: 192, src: fullBleed(0.72) },
-  { file: 'icons/maskable-512.png', size: 512, src: fullBleed(0.72) },
-  { file: 'apple-touch-icon.png', size: 180, src: fullBleed(0.86) },
-  { file: 'favicon-32.png', size: 32, src: svg },
+  // "any" icons: ivory rounded tile so the gold mark reads on dark and light launchers.
+  { file: 'icons/icon-192.png', size: 192, svg: square({ bg: '#FFFFFF', scale: 0.7, radius: 200 }) },
+  { file: 'icons/icon-512.png', size: 512, svg: square({ bg: '#FFFFFF', scale: 0.7, radius: 200 }) },
+  // Maskable: full-bleed, mark inside the 80% safe zone.
+  { file: 'icons/maskable-192.png', size: 192, svg: square({ bg: '#FFFFFF', scale: 0.56 }) },
+  { file: 'icons/maskable-512.png', size: 512, svg: square({ bg: '#FFFFFF', scale: 0.56 }) },
+  // iOS rounds the corners itself.
+  { file: 'apple-touch-icon.png', size: 180, svg: square({ bg: '#FFFFFF', scale: 0.68 }) },
+  { file: 'favicon-32.png', size: 32, svg: square({ bg: '#FFFFFF', scale: 0.86, radius: 180 }) },
+  // Android status-bar badge: white silhouette on transparent (the OS tints it).
+  { file: 'icons/badge-96.png', size: 96, svg: square({ bg: null, scale: 0.9, color: '#FFFFFF' }) },
 ];
 
 for (const t of targets) {
-  const png = await sharp(Buffer.from(t.src), { density: 384 }).resize(t.size, t.size).png({ compressionLevel: 9 }).toBuffer();
+  const png = await render(t.svg, t.size);
   await writeFile(path.join(pub, t.file), png);
-  console.info(`wrote public/${t.file} (${t.size}x${t.size}, ${png.length} bytes)`);
+  console.info(`wrote public/${t.file} (${t.size}x${t.size})`);
 }
+await writeFile(path.join(pub, 'icon.svg'), square({ bg: '#FFFFFF', scale: 0.82, radius: 200 }));
+console.info('wrote public/icon.svg');
+

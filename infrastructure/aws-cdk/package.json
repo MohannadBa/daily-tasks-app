@@ -3,14 +3,15 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "synth": "cdk synth --quiet",
+    "synth": "cdk synth --quiet DailyTasks-Registry DailyTasks-staging",
     "diff": "cdk diff",
     "deploy:registry": "cdk deploy DailyTasks-Registry",
     "deploy:staging": "cdk deploy DailyTasks-staging",
     "deploy:production": "cdk deploy DailyTasks-production",
     "typecheck": "tsc --noEmit",
     "lint": "eslint bin lib test",
-    "test": "vitest run"
+    "test": "vitest run",
+    "synth:production": "cdk synth --quiet DailyTasks-production"
   },
   "dependencies": {
     "aws-cdk-lib": "^2.215.0",

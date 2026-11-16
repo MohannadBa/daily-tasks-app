@@ -8,13 +8,21 @@
 | Worker tests (fan-out, scheduling, outbox) | `apps/worker/test` | vitest | compose Postgres |
 | Web unit/component tests (incl. PWA platform detection, locale resolution) | `apps/web/src/**/*.test.ts(x)` | vitest + Testing Library | — |
 | Infrastructure assertions | `infrastructure/aws-cdk/test` | vitest + CDK assertions | — |
-| Docker end-to-end smoke test | `scripts/docker-smoke-test.mjs` | node | running compose stack |
+| Web Push (worker transport, retries, expiry, SSRF, real encryption) | `apps/worker/test/push.test.ts` | vitest | compose Postgres |
+| Push API (subscribe/unsubscribe/status/test) | `apps/api/test/push.e2e-spec.ts` | jest + supertest | compose Postgres |
+| Service worker (push display, click, deep links) | `apps/web/src/lib/sw.test.ts` | vitest (node vm sandbox) | — |
+| Docker end-to-end smoke test (incl. Web Push to a fake push service) | `scripts/docker-smoke-test.mjs` | node | running compose stack |
+| Platform features (dashboard scoping, sorting, password recovery, WebSocket auth/origin/isolation/expiry) | `apps/api/test/platform.e2e-spec.ts` | jest + ws | compose Postgres |
+| Worker maintenance (upload retention, real-time publisher, Arabic defaults) | `apps/worker/test/maintenance.test.ts` | vitest | compose Postgres |
+| Real-time client (backoff, reauth, cleanup) | `apps/web/src/lib/realtime.test.ts` | vitest | — |
+| **Browser end-to-end** (two-browser workflow with live updates, rating privacy via UI/BFF/API, deep links, password recovery, Arabic default + RTL/LTR switching, WebSocket reconnection after API restart, 390/820/1280 px layouts in AR+EN, PWA manifest/SW/offline, SW cache contents) | `apps/web/e2e/*.spec.ts` | Playwright (installed Chrome) | running compose stack |
 
 ```bash
 docker compose up -d postgres localstack
 pnpm build:packages
 pnpm test             # all suites (sequential)
 docker compose up -d --build && pnpm test:docker
+pnpm --filter @dailytasks/web test:e2e
 ```
 Test setup refuses to reset any database whose name does not end in `_test`.
 

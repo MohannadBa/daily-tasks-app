@@ -30,8 +30,13 @@ for (const config of Object.values(environments)) {
     imageTag: ctx(`${config.name}:imageTag`) ?? ctx('imageTag') ?? 'latest',
     certificateArn: ctx(`${config.name}:certificateArn`),
     publicUrl: ctx(`${config.name}:publicUrl`),
+    domainName: ctx(`${config.name}:domainName`),
+    hostedZoneId: ctx(`${config.name}:hostedZoneId`) ?? ctx('hostedZoneId'),
+    hostedZoneName: ctx(`${config.name}:hostedZoneName`) ?? ctx('hostedZoneName'),
     alarmEmail: ctx('alarmEmail'),
-    expoAccessTokenSecretArn: ctx(`${config.name}:expoAccessTokenSecretArn`),
+    vapidPublicKey: ctx(`${config.name}:vapidPublicKey`),
+    vapidPrivateKeySecretArn: ctx(`${config.name}:vapidPrivateKeySecretArn`),
+    vapidSubject: ctx(`${config.name}:vapidSubject`),
     terminationProtection: config.name === 'production',
   });
 }

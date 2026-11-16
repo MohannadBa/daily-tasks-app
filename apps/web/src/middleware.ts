@@ -4,6 +4,8 @@ import { NextResponse, type NextRequest } from 'next/server';
 export function middleware(req: NextRequest) {
   const hasSession = req.cookies.has('dt_refresh') || req.cookies.has('dt_access');
   const { pathname } = req.nextUrl;
+  // Password recovery must work while signed out.
+  if (pathname === '/forgot-password') return NextResponse.next();
   if (pathname === '/login') {
     return hasSession ? NextResponse.redirect(new URL('/', req.url)) : NextResponse.next();
   }
@@ -20,5 +22,5 @@ export function middleware(req: NextRequest) {
 export const config = {
   // Public assets: API proxy, auth, Next internals, health, and the PWA files (manifest, service worker,
   // offline shell, icons) — these must load without a session (install, offline, login screen).
-  matcher: ['/((?!bff|session|_next|health|favicon|icon.svg|icons/|apple-touch-icon|manifest.webmanifest|sw.js|offline.html).*)'],
+  matcher: ['/((?!bff|session|_next|health|favicon|icon.svg|icons/|brand/|apple-touch-icon|manifest.webmanifest|sw.js|offline.html).*)'],
 };

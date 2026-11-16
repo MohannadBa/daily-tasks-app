@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { Logger, type INestApplication } from '@nestjs/common';
+import { ConsoleLogger, Logger, type INestApplication } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
@@ -23,7 +23,9 @@ export function configureApp(app: INestApplication, env: ApiEnv) {
 
 async function bootstrap() {
   ensureDatabaseUrl();
-  const app = await NestFactory.create(AppModule, { bufferLogs: false });
+  // Structured JSON logs in production (CloudWatch metric filters / Logs Insights); readable text locally.
+  const logger = process.env.NODE_ENV === 'production' ? new ConsoleLogger({ json: true, colors: false }) : undefined;
+  const app = await NestFactory.create(AppModule, { bufferLogs: false, ...(logger ? { logger } : {}) });
   const env = app.get<ApiEnv>(API_ENV);
   configureApp(app, env);
 

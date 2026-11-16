@@ -38,6 +38,17 @@ export const newPasswordSchema = z.object({
   newPassword: passwordSchema,
 });
 
+export const forgotPasswordSchema = z.object({ email: z.string().trim().toLowerCase().email() });
+
+export const resetPasswordSchema = z.object({
+  email: z.string().trim().toLowerCase().email(),
+  code: z.string().trim().regex(/^\d{4,10}$/, 'Enter the code from the e-mail'),
+  newPassword: passwordSchema,
+});
+
+/** Admin-initiated reset. In local auth mode the admin sets a temporary password. */
+export const adminResetPasswordSchema = z.object({ temporaryPassword: passwordSchema.optional() });
+
 export const updateProfileSchema = z
   .object({
     name: trimmed(1, 120).optional(),
@@ -53,7 +64,7 @@ export const inviteUserSchema = z.object({
   email: z.string().trim().toLowerCase().email(),
   name: trimmed(1, 120),
   role: roleSchema,
-  locale: z.enum(['en', 'ar']).default('en'),
+  locale: z.enum(['en', 'ar']).default('ar'),
   /** Local auth mode only. Cognito sends its own invitation e-mail. */
   temporaryPassword: passwordSchema.optional(),
 });
@@ -140,6 +151,8 @@ export const taskListQuerySchema = z.object({
   assigneeId: uuid.optional(),
   status: z.enum(['ASSIGNED', 'IN_PROGRESS', 'COMPLETED']).optional(),
   view: z.enum(['all', 'active', 'completed', 'overdue', 'awaiting_rating']).default('all'),
+  /** Sort order; default depends on the view (deadline ascending, or latest completion). */
+  sort: z.enum(['deadline', '-deadline', '-created', '-updated', 'title']).optional(),
   q: z.string().trim().max(200).optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(25),
@@ -184,15 +197,33 @@ export const performanceQuerySchema = z.object({ projectId: uuid.optional() });
 
 /* ------------------------- Notifications ------------------------ */
 
-export const registerDeviceSchema = z.object({
-  expoPushToken: z
+const base64url = (min: number, max: number) =>
+  z
     .string()
     .trim()
-    .regex(/^(ExponentPushToken|ExpoPushToken)\[[^\]]+\]$/, 'Invalid Expo push token'),
-  platform: z.enum(['IOS', 'ANDROID', 'WEB']),
-  deviceName: z.string().trim().max(120).optional().nullable(),
-  locale: z.enum(['en', 'ar']).optional(),
+    .regex(/^[A-Za-z0-9_-]+={0,2}$/, 'Must be base64url')
+    .min(min)
+    .max(max);
+
+/**
+ * Browser PushSubscription.toJSON() (W3C Push API). p256dh is an uncompressed P-256 point
+ * (65 bytes -> 87 base64url chars), auth a 16-byte secret (22 chars).
+ * The endpoint's host is additionally checked against the push-service allow-list by the API.
+ */
+export const pushSubscribeSchema = z.object({
+  endpoint: z.string().trim().url().max(2048).regex(/^https?:\/\//, 'Endpoint must be an http(s) URL'),
+  expirationTime: z.number().int().positive().nullable().optional(),
+  keys: z.object({
+    p256dh: base64url(80, 100),
+    auth: base64url(16, 32),
+  }),
 });
+export type PushSubscribeInput = z.input<typeof pushSubscribeSchema>;
+
+/** Remove this browser's subscription (endpoint) or one of the user's devices (id). */
+export const pushUnsubscribeSchema = z
+  .object({ endpoint: z.string().trim().max(2048).optional(), id: z.string().uuid().optional() })
+  .refine((v) => !!v.endpoint !== !!v.id, 'Provide exactly one of endpoint or id');
 
 export const notificationListQuerySchema = z.object({
   unreadOnly: z

@@ -1,5 +1,11 @@
 import type { TaskDto } from '@dailytasks/shared-types';
 
+/**
+ * Application timezone. Timestamps are stored and transported as UTC (ISO 8601); everything shown
+ * to users — and every date/time a user types — is in Riyadh time, regardless of the device's zone.
+ */
+export const APP_TIMEZONE = 'Asia/Riyadh';
+
 // Arabic uses the Gregorian calendar explicitly (plain "ar-SA" would default to Hijri).
 let intlLocale: string | undefined;
 export function setFormatLocale(locale: 'en' | 'ar') {
@@ -8,7 +14,12 @@ export function setFormatLocale(locale: 'en' | 'ar') {
 
 export function formatDateTime(iso: string | null | undefined): string {
   if (!iso) return '—';
-  return new Intl.DateTimeFormat(intlLocale, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(iso));
+  return new Intl.DateTimeFormat(intlLocale, { dateStyle: 'medium', timeStyle: 'short', timeZone: APP_TIMEZONE }).format(new Date(iso));
+}
+
+export function formatDate(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  return new Intl.DateTimeFormat(intlLocale, { dateStyle: 'medium', timeZone: APP_TIMEZONE }).format(new Date(iso));
 }
 
 export function formatRelative(iso: string, now = Date.now()): string {
@@ -26,16 +37,30 @@ export function formatBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-/** Converts a value from <input type="datetime-local"> (local time) to an ISO string with offset. */
-export function localInputToIso(value: string): string {
-  return new Date(value).toISOString();
+/** Offset (ms) of `timeZone` from UTC at the given instant (handles DST zones generically). */
+function zoneOffsetMs(at: Date, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(at);
+  const get = (t: string) => Number(parts.find((p) => p.type === t)!.value);
+  const asUtc = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second'));
+  return asUtc - Math.floor(at.getTime() / 1000) * 1000;
 }
 
-/** ISO -> value usable by <input type="datetime-local"> in the browser's local time. */
-export function isoToLocalInput(iso: string): string {
-  const d = new Date(iso);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+/** "YYYY-MM-DDTHH:mm" typed in <input type="datetime-local"> (Riyadh wall time) -> UTC ISO string. */
+export function localInputToIso(value: string, timeZone = APP_TIMEZONE): string {
+  const [date, time = '00:00'] = value.split('T');
+  const [y, m, d] = date!.split('-').map(Number);
+  const [hh, mm] = time.split(':').map(Number);
+  const wallAsUtc = Date.UTC(y!, m! - 1, d!, hh!, mm!);
+  // Two passes resolve the offset correctly around DST transitions.
+  let utc = wallAsUtc - zoneOffsetMs(new Date(wallAsUtc), timeZone);
+  utc = wallAsUtc - zoneOffsetMs(new Date(utc), timeZone);
+  return new Date(utc).toISOString();
+}
+
+/** UTC ISO -> "YYYY-MM-DDTHH:mm" Riyadh wall time for <input type="datetime-local">. */
+export function isoToLocalInput(iso: string, timeZone = APP_TIMEZONE): string {
+  const d = new Date(new Date(iso).getTime() + zoneOffsetMs(new Date(iso), timeZone));
+  return d.toISOString().slice(0, 16);
 }
 
 export type TaskTone = 'blue' | 'amber' | 'green' | 'red' | 'gray';

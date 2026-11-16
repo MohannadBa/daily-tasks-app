@@ -33,16 +33,25 @@ export class DashboardController {
         : { projectId: { in: managed } };
     const base: Prisma.TaskWhereInput = { AND: [scope, { archivedAt: null }] };
 
-    const [projects, active, completed, overdue, upcoming] = await Promise.all([
+    const in24h = new Date(now.getTime() + 24 * 3600_000);
+    const [projects, active, completed, overdue, dueSoon, upcoming, activity] = await Promise.all([
       this.prisma.project.count({ where: { ...this.access.projectScope(user), status: 'ACTIVE' } }),
       this.prisma.task.count({ where: { AND: [base, { status: { not: TaskStatus.COMPLETED } }] } }),
       this.prisma.task.count({ where: { AND: [base, { status: TaskStatus.COMPLETED }] } }),
       this.prisma.task.count({ where: { AND: [base, { status: { not: TaskStatus.COMPLETED }, deadline: { lt: now } }] } }),
+      this.prisma.task.count({ where: { AND: [base, { status: { not: TaskStatus.COMPLETED }, deadline: { gte: now, lte: in24h } }] } }),
       this.prisma.task.findMany({
         where: { AND: [base, { status: { not: TaskStatus.COMPLETED } }] },
         include: taskInclude,
         orderBy: { deadline: 'asc' },
         take: 8,
+      }),
+      // Employee-visible history only (rating audit lives elsewhere and is never included).
+      this.prisma.taskHistory.findMany({
+        where: { task: base },
+        include: { actor: { select: { name: true } }, task: { select: { title: true, project: { select: { name: true } } } } },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
       }),
     ]);
 
@@ -63,9 +72,18 @@ export class DashboardController {
 
     return {
       role: user.role,
-      totals: { projects, activeTasks: active, completedTasks: completed, overdueTasks: overdue, awaitingRating },
+      totals: { projects, activeTasks: active, completedTasks: completed, overdueTasks: overdue, dueSoonTasks: dueSoon, awaitingRating },
       performance,
       upcoming: upcoming.map((t) => toTaskDto(t, !isEmployee)),
+      recentActivity: activity.map((h) => ({
+        id: h.id,
+        action: h.action,
+        actorName: h.actor?.name ?? null,
+        taskId: h.taskId,
+        taskTitle: h.task.title,
+        projectName: h.task.project.name,
+        createdAt: h.createdAt.toISOString(),
+      })),
     };
   }
 }

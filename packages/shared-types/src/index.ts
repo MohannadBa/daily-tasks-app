@@ -38,6 +38,7 @@ export const NotificationType = {
   TASK_OVERDUE: 'TASK_OVERDUE',
   TASK_DEADLINE_APPROACHING: 'TASK_DEADLINE_APPROACHING',
   TASK_REOPENED: 'TASK_REOPENED',
+  PUSH_TEST: 'PUSH_TEST',
 } as const;
 export type NotificationType = (typeof NotificationType)[keyof typeof NotificationType];
 
@@ -54,7 +55,8 @@ export const TaskHistoryAction = {
 } as const;
 export type TaskHistoryAction = (typeof TaskHistoryAction)[keyof typeof TaskHistoryAction];
 
-export type DevicePlatform = 'IOS' | 'ANDROID' | 'WEB';
+export type PushPlatform = 'IOS' | 'ANDROID' | 'DESKTOP' | 'OTHER';
+export type PushDeliveryStatus = 'PENDING' | 'SENT' | 'FAILED' | 'EXPIRED';
 export type Locale = 'en' | 'ar';
 
 /** Task "views" supported by GET /tasks?view=... */
@@ -233,6 +235,8 @@ export interface EmployeePerformanceDetailDto extends EmployeePerformanceSummary
     ratedAt: string;
   }>;
   history: TaskRatingRevisionDto[];
+  /** Projects (visible to the caller) the employee belongs to. */
+  projects: Array<{ id: string; name: string; role: ProjectRole; removed: boolean }>;
 }
 
 export interface NotificationDto {
@@ -253,11 +257,25 @@ export interface DashboardDto {
     activeTasks: number;
     completedTasks: number;
     overdueTasks: number;
+    /** Open tasks whose deadline is within the next 24 hours. */
+    dueSoonTasks: number;
     awaitingRating: number;
   };
   /** Present only for admins/managers. */
   performance?: EmployeePerformanceSummaryDto[];
   upcoming: TaskDto[];
+  /** Latest task-history entries within the caller's scope (never rating data). */
+  recentActivity: ActivityDto[];
+}
+
+export interface ActivityDto {
+  id: string;
+  action: TaskHistoryAction;
+  actorName: string | null;
+  taskId: string;
+  taskTitle: string;
+  projectName: string;
+  createdAt: string;
 }
 
 export interface CompanySettingsDto {
@@ -281,14 +299,80 @@ export interface DownloadUrlResponse {
   expiresIn: number;
 }
 
-/** Payload placed in push notification `data` and used for deep links. */
-export interface PushData {
+/**
+ * Encrypted Web Push payload, read by the service worker (apps/web/public/sw.js). Keep it small:
+ * push services cap payloads at ~4 KB.
+ */
+export interface PushPayload {
+  /** Schema version for the service worker. */
+  v: 1;
   notificationId: string;
   type: NotificationType;
-  taskId?: string;
+  title: string;
+  body: string;
+  /** Same-origin path the notification opens, e.g. /tasks/<id>. */
   url: string;
+  taskId?: string;
+  /** Unread count for the app icon badge. */
+  badgeCount?: number;
+  /** Replaces an earlier OS notification with the same tag (same task). */
+  tag: string;
+  /** Keep on screen until the user acts (overdue alerts; ignored where unsupported). */
+  requireInteraction?: boolean;
 }
 
-export function taskDeepLink(taskId: string): string {
-  return `dailytasks://tasks/${taskId}`;
+/** In-app path for a task; used for notification deep links. */
+export function taskPath(taskId: string): string {
+  return `/tasks/${taskId}`;
 }
+
+export interface PushSubscriptionDto {
+  id: string;
+  platform: PushPlatform;
+  /** Short browser/OS description derived from the user agent. */
+  device: string;
+  isActive: boolean;
+  /** sha256(endpoint) prefix so a browser can recognise its own row without the endpoint being exposed. */
+  endpointHash: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  deactivationReason: string | null;
+  lastDelivery: { status: PushDeliveryStatus; statusCode: number | null; at: string } | null;
+}
+
+export interface PushStatusDto {
+  /** False when the server has no VAPID key configured (push disabled). */
+  enabled: boolean;
+  vapidPublicKey: string | null;
+  subscriptions: PushSubscriptionDto[];
+}
+
+/* ------------------------------ Real-time ------------------------------ */
+
+/** Postgres LISTEN/NOTIFY channel used to fan real-time events out to every API instance. */
+export const REALTIME_CHANNEL = 'dt_realtime';
+/** WebSocket path on the API (same origin behind the ALB: wss://<domain>/api/v1/realtime). */
+export const REALTIME_PATH = '/api/v1/realtime';
+
+/**
+ * Event pushed to open sessions. Contains only ids/types — clients refetch through the normal,
+ * authorized REST API, so no task content or rating data ever travels over the socket.
+ */
+export interface RealtimeEvent {
+  kind: 'notification';
+  type: NotificationType;
+  taskId?: string;
+  projectId?: string;
+}
+
+/** NOTIFY payload: which users should receive the event (must stay < 8000 bytes). */
+export interface RealtimeEnvelope {
+  users: string[];
+  event: RealtimeEvent;
+}
+
+export type RealtimeServerMessage =
+  | { type: 'hello'; userId: string; heartbeatMs: number }
+  | { type: 'event'; event: RealtimeEvent }
+  /** Access token expired: refresh the session and reconnect. */
+  | { type: 'reauth' };

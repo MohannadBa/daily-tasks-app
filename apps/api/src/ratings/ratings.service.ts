@@ -124,8 +124,14 @@ export class RatingsService {
         take: 200,
       }),
     ]);
+    const memberships = await this.prisma.projectMembership.findMany({
+      where: { userId: employeeId, ...(projectIds ? { projectId: { in: projectIds } } : {}) },
+      include: { project: { select: { id: true, name: true } } },
+      orderBy: { project: { name: 'asc' } },
+    });
     return {
       ...base,
+      projects: memberships.map((m) => ({ id: m.project.id, name: m.project.name, role: m.role, removed: m.removedAt !== null })),
       ratings: ratings.map((r) => ({
         taskId: r.taskId,
         taskTitle: r.task.title,

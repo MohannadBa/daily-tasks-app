@@ -13,6 +13,8 @@ export const api = createApiClient({
 });
 
 export async function logout() {
+  // Stop this device receiving the user's pushes (lazy import avoids a cycle with ./push).
+  await import('./push').then((m) => m.removePushOnSignOut()).catch(() => undefined);
   await fetch('/session/logout', { method: 'POST' });
   window.location.href = '/login';
 }

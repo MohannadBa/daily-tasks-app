@@ -49,8 +49,17 @@ export class TasksService {
       }
     }
     const where: Prisma.TaskWhereInput = { AND: and };
-    const orderBy: Prisma.TaskOrderByWithRelationInput[] =
-      q.view === 'completed' || q.view === 'awaiting_rating' ? [{ completedAt: 'desc' }] : [{ deadline: 'asc' }];
+    const sorts: Record<NonNullable<typeof q.sort>, Prisma.TaskOrderByWithRelationInput[]> = {
+      deadline: [{ deadline: 'asc' }],
+      '-deadline': [{ deadline: 'desc' }],
+      '-created': [{ createdAt: 'desc' }],
+      '-updated': [{ updatedAt: 'desc' }],
+      title: [{ title: 'asc' }],
+    };
+    const orderBy: Prisma.TaskOrderByWithRelationInput[] = [
+      ...(q.sort ? sorts[q.sort] : q.view === 'completed' || q.view === 'awaiting_rating' ? [{ completedAt: 'desc' as const }] : [{ deadline: 'asc' as const }]),
+      { id: 'asc' }, // stable pagination
+    ];
     const [rows, total] = await Promise.all([
       this.prisma.task.findMany({ where, include: taskInclude, orderBy, skip: (q.page - 1) * q.pageSize, take: q.pageSize }),
       this.prisma.task.count({ where }),

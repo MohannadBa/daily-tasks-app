@@ -1,107 +1,131 @@
-import { Expo, type ExpoPushMessage, type ExpoPushTicket } from 'expo-server-sdk';
-import type { PrismaClient } from '@dailytasks/database';
-import type { PushData } from '@dailytasks/shared-types';
-import { errMsg, logger } from './logger';
+import webpush from 'web-push';
+import { isAllowedPushEndpoint, PUSH_TTL_SECONDS } from '@dailytasks/config';
+import type { PushPayload } from '@dailytasks/shared-types';
 
-export interface PushMessage {
-  deviceId: string;
-  token: string;
-  title: string;
-  body: string;
-  data: PushData;
-  badge?: number;
+export interface PushTarget {
+  endpoint: string;
+  p256dh: string;
+  auth: string;
 }
 
-export interface PushSender {
-  /** Sends and persists tickets. Must disable devices whose tokens are reported invalid. */
-  send(messages: PushMessage[]): Promise<void>;
-  /** Looks up receipts for older tickets (Expo reports some failures only via receipts). */
-  checkReceipts(): Promise<void>;
+export interface PushOptions {
+  /** RFC 8030 urgency: "high" wakes the device even in power-saving modes. */
+  urgency: 'very-low' | 'low' | 'normal' | 'high';
+  /** RFC 8030 topic (≤ 32 base64url chars): a newer message with the same topic replaces an undelivered one. */
+  topic?: string;
+  ttlSeconds?: number;
+}
+
+export type PushOutcome =
+  /** Push service accepted the message (2xx). NOT proof that the device displayed it. */
+  | 'sent'
+  /** 404/410: the subscription no longer exists. Deactivate it. */
+  | 'expired'
+  /** Will not succeed on retry (400 malformed, 403 key mismatch, 413 too large, endpoint not allowed). */
+  | 'failed'
+  /** 429, 5xx, network error or timeout: retry later. */
+  | 'transient';
+
+export interface PushResult {
+  outcome: PushOutcome;
+  statusCode: number | null;
+  error?: string;
+}
+
+export interface PushTransport {
+  /** False when push is switched off or VAPID keys are missing; notifications are still stored. */
+  readonly enabled: boolean;
+  send(target: PushTarget, payload: PushPayload, options: PushOptions): Promise<PushResult>;
+}
+
+export function classifyStatus(status: number): PushOutcome {
+  if (status >= 200 && status < 300) return 'sent';
+  if (status === 404 || status === 410) return 'expired';
+  if (status === 429 || status >= 500) return 'transient';
+  return 'failed';
+}
+
+export interface WebPushConfig {
+  publicKey: string;
+  privateKey: string;
+  subject: string;
+  allowedHosts: string[];
+  allowInsecure: boolean;
+  timeoutMs: number;
 }
 
 /**
- * Expo Push Service sender. Expo relays to APNs (iOS) and FCM (Android).
- * Delivery timing is controlled by Apple/Google and is not guaranteed to be immediate.
+ * Web Push (RFC 8030/8291/8292). `web-push` builds the VAPID JWT and the aes128gcm-encrypted body;
+ * the request itself is sent with fetch so we control timeouts and status handling.
+ * Push services (FCM, Apple, Mozilla, WNS) decide when the device receives it; there is no
+ * delivery-time guarantee.
  */
-export class ExpoPushSender implements PushSender {
-  private readonly expo: Expo;
+export class WebPushTransport implements PushTransport {
+  readonly enabled = true;
   constructor(
-    private readonly prisma: PrismaClient,
-    accessToken?: string,
-  ) {
-    this.expo = new Expo({ accessToken: accessToken || undefined });
-  }
+    private readonly cfg: WebPushConfig,
+    private readonly fetchImpl: typeof fetch = fetch,
+  ) {}
 
-  async send(messages: PushMessage[]) {
-    const valid = messages.filter((m) => Expo.isExpoPushToken(m.token));
-    const invalid = messages.filter((m) => !Expo.isExpoPushToken(m.token));
-    if (invalid.length) await this.disable(invalid.map((m) => m.deviceId), 'malformed token');
-
-    const expoMessages: ExpoPushMessage[] = valid.map((m) => ({
-      to: m.token,
-      title: m.title,
-      body: m.body,
-      data: m.data as unknown as Record<string, unknown>,
-      sound: 'default',
-      priority: 'high',
-      channelId: 'tasks',
-      badge: m.badge,
-    }));
-    const chunks = this.expo.chunkPushNotifications(expoMessages);
-    let offset = 0;
-    for (const chunk of chunks) {
-      // Throws on network/5xx errors -> the SQS message is retried.
-      const tickets: ExpoPushTicket[] = await this.expo.sendPushNotificationsAsync(chunk);
-      const toDisable: string[] = [];
-      const ticketRows: Array<{ ticketId: string; deviceInstallationId: string; notificationId: string }> = [];
-      tickets.forEach((t, i) => {
-        const msg = valid[offset + i]!;
-        if (t.status === 'ok') ticketRows.push({ ticketId: t.id, deviceInstallationId: msg.deviceId, notificationId: msg.data.notificationId });
-        else if (t.details?.error === 'DeviceNotRegistered') toDisable.push(msg.deviceId);
-        else logger.warn('push ticket error', { error: t.details?.error, message: t.message });
+  async send(target: PushTarget, payload: PushPayload, options: PushOptions): Promise<PushResult> {
+    // Defence in depth: the API validates on subscribe, but never POST to arbitrary hosts (SSRF).
+    if (!isAllowedPushEndpoint(target.endpoint, this.cfg.allowedHosts, this.cfg.allowInsecure)) {
+      return { outcome: 'failed', statusCode: null, error: 'endpoint host not allowed' };
+    }
+    let details: ReturnType<typeof webpush.generateRequestDetails>;
+    try {
+      details = webpush.generateRequestDetails({ endpoint: target.endpoint, keys: { p256dh: target.p256dh, auth: target.auth } }, JSON.stringify(payload), {
+        vapidDetails: { subject: this.cfg.subject, publicKey: this.cfg.publicKey, privateKey: this.cfg.privateKey },
+        TTL: options.ttlSeconds ?? PUSH_TTL_SECONDS,
+        urgency: options.urgency,
+        topic: options.topic,
+        contentEncoding: 'aes128gcm',
       });
-      offset += chunk.length;
-      if (ticketRows.length) await this.prisma.pushTicket.createMany({ data: ticketRows, skipDuplicates: true });
-      if (toDisable.length) await this.disable(toDisable, 'DeviceNotRegistered');
+    } catch (e) {
+      // Invalid client keys or payload too large for encryption.
+      return { outcome: 'failed', statusCode: null, error: `encrypt: ${(e as Error).message}`.slice(0, 300) };
     }
-  }
-
-  async checkReceipts() {
-    const cutoff = new Date(Date.now() - 15 * 60 * 1000);
-    const tickets = await this.prisma.pushTicket.findMany({ where: { checkedAt: null, createdAt: { lt: cutoff } }, take: 1000 });
-    if (tickets.length === 0) return;
-    const byTicket = new Map(tickets.map((t) => [t.ticketId, t]));
-    for (const chunk of this.expo.chunkPushNotificationReceiptIds(tickets.map((t) => t.ticketId))) {
-      try {
-        const receipts = await this.expo.getPushNotificationReceiptsAsync(chunk);
-        const toDisable: string[] = [];
-        for (const [id, r] of Object.entries(receipts)) {
-          if (r.status === 'error') {
-            if (r.details?.error === 'DeviceNotRegistered') toDisable.push(byTicket.get(id)!.deviceInstallationId);
-            else logger.warn('push receipt error', { error: r.details?.error, message: r.message });
-          }
-        }
-        if (toDisable.length) await this.disable(toDisable, 'receipt DeviceNotRegistered');
-        await this.prisma.pushTicket.updateMany({ where: { ticketId: { in: chunk } }, data: { checkedAt: new Date() } });
-      } catch (e) {
-        logger.warn('receipt check failed', { error: errMsg(e) });
-      }
+    try {
+      const res = await this.fetchImpl(details.endpoint, {
+        method: details.method,
+        headers: details.headers as Record<string, string>,
+        body: details.body ? new Uint8Array(details.body as Buffer) : undefined,
+        signal: AbortSignal.timeout(this.cfg.timeoutMs),
+        redirect: 'error',
+      });
+      const outcome = classifyStatus(res.status);
+      const error = outcome === 'sent' ? undefined : (await res.text().catch(() => '')).slice(0, 300) || res.statusText;
+      return { outcome, statusCode: res.status, error };
+    } catch (e) {
+      const err = e as Error;
+      return { outcome: 'transient', statusCode: null, error: (err.name === 'TimeoutError' ? 'timeout' : err.message).slice(0, 300) };
     }
-    // Housekeeping: forget checked tickets after a day.
-    await this.prisma.pushTicket.deleteMany({ where: { checkedAt: { lt: new Date(Date.now() - 24 * 3600 * 1000) } } });
-  }
-
-  private async disable(deviceIds: string[], reason: string) {
-    await this.prisma.deviceInstallation.updateMany({ where: { id: { in: deviceIds } }, data: { disabledAt: new Date() } });
-    logger.info('disabled push devices', { count: deviceIds.length, reason });
   }
 }
 
-/** No-op sender (PUSH_ENABLED=false) and test double. */
-export class RecordingPushSender implements PushSender {
-  sent: PushMessage[] = [];
-  async send(messages: PushMessage[]) {
-    this.sent.push(...messages);
+/** PUSH_ENABLED=false / no VAPID keys. */
+export class DisabledPushTransport implements PushTransport {
+  readonly enabled = false;
+  async send(): Promise<PushResult> {
+    return { outcome: 'failed', statusCode: null, error: 'push disabled' };
   }
-  async checkReceipts() {}
+}
+
+/** Test double: records every send; scripted outcomes per endpoint (default "sent"/201). */
+export class RecordingPushTransport implements PushTransport {
+  readonly enabled = true;
+  sent: Array<{ target: PushTarget; payload: PushPayload; options: PushOptions }> = [];
+  private readonly scripted = new Map<string, PushResult[]>();
+
+  /** Queue results for an endpoint; the last one repeats. */
+  script(endpoint: string, ...results: PushResult[]) {
+    this.scripted.set(endpoint, results);
+  }
+
+  async send(target: PushTarget, payload: PushPayload, options: PushOptions): Promise<PushResult> {
+    this.sent.push({ target, payload, options });
+    const queue = this.scripted.get(target.endpoint);
+    if (!queue?.length) return { outcome: 'sent', statusCode: 201 };
+    return queue.length > 1 ? queue.shift()! : queue[0]!;
+  }
 }

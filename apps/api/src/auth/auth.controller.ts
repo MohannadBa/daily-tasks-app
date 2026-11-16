@@ -3,7 +3,7 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { ProjectRole } from '@dailytasks/database';
 import type { CurrentUser as CurrentUserDto, LoginResponse } from '@dailytasks/shared-types';
-import { loginSchema, newPasswordSchema, refreshSchema, updateProfileSchema } from '@dailytasks/validation';
+import { forgotPasswordSchema, loginSchema, newPasswordSchema, refreshSchema, resetPasswordSchema, updateProfileSchema } from '@dailytasks/validation';
 import { ApiZodBody, ZodValidationPipe } from '../common/zod';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthUser } from './auth.types';
@@ -34,6 +34,26 @@ export class AuthController {
   @ApiZodBody(newPasswordSchema)
   async newPassword(@Body(new ZodValidationPipe(newPasswordSchema)) body: { email: string; session: string; newPassword: string }) {
     return this.toResponse(await this.identity.completeNewPassword(body.email, body.session, body.newPassword));
+  }
+
+  /** Always 202 (no account enumeration). 501 in local auth mode (no e-mail delivery). */
+  @Public()
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('auth/forgot-password')
+  @HttpCode(202)
+  @ApiZodBody(forgotPasswordSchema)
+  async forgotPassword(@Body(new ZodValidationPipe(forgotPasswordSchema)) body: { email: string }) {
+    await this.identity.forgotPassword(body.email);
+    return { status: 'CODE_SENT_IF_ACCOUNT_EXISTS' };
+  }
+
+  @Public()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('auth/reset-password')
+  @HttpCode(204)
+  @ApiZodBody(resetPasswordSchema)
+  async resetPassword(@Body(new ZodValidationPipe(resetPasswordSchema)) body: { email: string; code: string; newPassword: string }) {
+    await this.identity.confirmPasswordReset(body.email, body.code, body.newPassword);
   }
 
   @Public()

@@ -4,7 +4,8 @@ import Link from 'next/link';
 import { useParams, useSearchParams } from 'next/navigation';
 import { Suspense, type ReactNode } from 'react';
 import { Stars } from '@/components/stars';
-import { Badge, Card, Empty, ErrorBox, PageHeader, Spinner } from '@/components/ui';
+import { TaskTable } from '@/components/task-table';
+import { Badge, Card, Empty, ErrorBox, PageHeader, SkeletonList, Spinner } from '@/components/ui';
 import { api } from '@/lib/api';
 import { formatDateTime } from '@/lib/format';
 import { useT } from '@/lib/i18n';
@@ -23,6 +24,7 @@ function EmployeeDetail() {
   const projectId = useSearchParams().get('projectId') ?? undefined;
   const { t } = useT();
   const q = useQuery({ queryKey: ['performance', 'employee', id, projectId], queryFn: () => api.performance.employee(id, projectId) });
+  const tasks = useQuery({ queryKey: ['tasks', 'assignee', id, projectId], queryFn: () => api.tasks.list({ assigneeId: id, projectId, view: 'active', pageSize: 50 }) });
   if (q.isLoading) return <Spinner />;
   if (!q.data) return <ErrorBox error={q.error ?? t('Not found')} />;
   const d = q.data;
@@ -40,6 +42,25 @@ function EmployeeDetail() {
         <Kpi label={t('Completed')}>{d.completedTaskCount}</Kpi>
         <Kpi label={t('Open')}>{d.openTaskCount}</Kpi>
         <Kpi label={t('Overdue')}>{d.overdueTaskCount}</Kpi>
+      </div>
+      <div className="mb-4 grid gap-4 sm:mb-6 sm:gap-6 lg:grid-cols-3">
+        <Card title={t('Open tasks ({n})', { n: tasks.data?.total ?? 0 })} className="lg:col-span-2">
+          {tasks.isLoading ? <SkeletonList rows={3} /> : <TaskTable tasks={tasks.data?.items ?? []} emptyText="No open tasks" />}
+        </Card>
+        <Card title={t('Projects')}>
+          {d.projects.length === 0 ? (
+            <Empty title={t('No projects')} />
+          ) : (
+            <ul className="-my-1 divide-y divide-slate-100">
+              {d.projects.map((p) => (
+                <li key={p.id} className="flex items-center justify-between gap-2 py-2.5">
+                  <Link href={`/projects/${p.id}`} className="min-w-0 truncate text-sm font-medium text-slate-900 hover:text-brand-700">{p.name}</Link>
+                  {p.removed ? <Badge>{t('Removed')}</Badge> : <Badge tone="blue">{t(p.role === 'MANAGER' ? 'Manager' : 'Member')}</Badge>}
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
       </div>
       <div className="grid gap-4 sm:gap-6 lg:grid-cols-3">
         <Card title={t('Task ratings')} className="lg:col-span-2">

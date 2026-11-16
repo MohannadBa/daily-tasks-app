@@ -14,6 +14,8 @@ export const OutboxEventType = {
   TASK_SCHEDULE_SYNC: 'TASK_SCHEDULE_SYNC',
   /** Fired by EventBridge Scheduler / local scheduler when a reminder or deadline is reached. */
   TASK_DEADLINE_DUE: 'TASK_DEADLINE_DUE',
+  /** User asked for a test push from the notification settings page. */
+  PUSH_TEST: 'PUSH_TEST',
 } as const;
 export type OutboxEventType = (typeof OutboxEventType)[keyof typeof OutboxEventType];
 
@@ -23,6 +25,10 @@ export interface TaskEventPayload {
   actorId: string | null;
   /** Arbitrary extra details (e.g. previousAssigneeId, commentId, changed fields). */
   details?: Record<string, unknown>;
+}
+
+export interface PushTestPayload {
+  userId: string;
 }
 
 export interface ScheduleSyncPayload {

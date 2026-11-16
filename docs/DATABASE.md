@@ -17,8 +17,8 @@ PostgreSQL 16 via Prisma 6. Schema: `packages/database/prisma/schema.prisma`; mi
 | TaskRatingRevision | Audit trail of rating create/edit (previous/new stars & feedback) | CHECK stars 1–5 |
 | TaskHistory | Employee-visible task timeline (created, updated, deadline changed, reassigned, started, commented, attachment, completed, reopened) | index `(taskId,createdAt)` |
 | Notification | Persistent in-app notification; `pushedAt` tracks push delivery | unique `(userId,dedupeKey)` |
-| DeviceInstallation | Expo push token per device (multiple per user); `disabledAt` when invalid | `expoPushToken` unique |
-| PushTicket | Expo ticket awaiting receipt check | `ticketId` unique |
+| PushSubscription | Browser Web Push subscription (multiple per user): endpoint, p256dh, auth, platform, `isActive`, expiry/failure/deactivation facts. VAPID keys are not stored. | `endpoint` unique; CHECK endpoint/key lengths, inactive ⇒ `deactivatedAt` |
+| PushDelivery | One push attempt record per (notification, subscription): status, attempts, push-service status code | unique `(notificationId,subscriptionId)`; CHECK `SENT ⇔ sentAt` |
 | OutboxEvent | Transactional outbox (`PENDING`/`PUBLISHED`/`FAILED`, attempts, backoff) | `dedupeKey` unique; index `(status,availableAt)` |
 | ScheduledEvent | Local-dev substitute for EventBridge schedules | `name` unique |
 
@@ -28,7 +28,7 @@ PostgreSQL 16 via Prisma 6. Schema: `packages/database/prisma/schema.prisma`; mi
 * **Completion facts are immutable per completion.** `completedLate` is computed once in the completion transaction; a CHECK constraint guarantees `COMPLETED ⇔ completedAt & completedLate NOT NULL`. On reopen they are cleared on the task and preserved in `TaskHistory.metadata`.
 * **`scheduleVersion`** invalidates previously scheduled deadline events without needing to delete them first.
 * **Soft membership removal** keeps history and assignments intact while revoking access immediately (all checks filter `removedAt IS NULL`).
-* **Deletion/archival:** business records use `onDelete: Restrict` (tasks, comments, attachments, ratings are never cascaded away). Projects are archived (`status=ARCHIVED`, `archivedAt`), users deactivated (`isActive=false`), tasks have `archivedAt`. Only per-user ephemera (notifications, devices) cascade on user deletion.
+* **Deletion/archival:** business records use `onDelete: Restrict` (tasks, comments, attachments, ratings are never cascaded away). Projects are archived (`status=ARCHIVED`, `archivedAt`), users deactivated (`isActive=false`), tasks have `archivedAt`. Only per-user ephemera (notifications, push subscriptions/deliveries) cascade on user deletion.
 * **Binary files are never stored in Postgres** — only S3 keys and metadata.
 
 ## Migrations & seed

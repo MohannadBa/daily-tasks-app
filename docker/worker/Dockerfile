@@ -47,5 +47,6 @@ USER node
 EXPOSE 3002
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.HEALTH_PORT||3002)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
-# tini forwards SIGTERM so the worker drains in-flight work (graceful shutdown).
+# tini (PID 1) forwards SIGTERM so the worker drains in-flight work (graceful shutdown) and reaps zombies.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "apps/worker/dist/main.js"]

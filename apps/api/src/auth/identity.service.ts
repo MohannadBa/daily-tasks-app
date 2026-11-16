@@ -1,11 +1,14 @@
-import { BadRequestException, Inject, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger, NotImplementedException, UnauthorizedException } from '@nestjs/common';
 import {
   AdminCreateUserCommand,
   AdminDisableUserCommand,
   AdminEnableUserCommand,
+  AdminResetUserPasswordCommand,
   AuthFlowType,
   ChallengeNameType,
   CognitoIdentityProviderClient,
+  ConfirmForgotPasswordCommand,
+  ForgotPasswordCommand,
   InitiateAuthCommand,
   RespondToAuthChallengeCommand,
   type AuthenticationResultType,
@@ -116,6 +119,48 @@ export class IdentityService {
     } catch {
       throw new UnauthorizedException('Invalid or expired refresh token');
     }
+  }
+
+  /**
+   * Self-service password recovery (Cognito e-mails a code). Always resolves for unknown or
+   * inactive e-mails too, so the response never reveals whether an account exists.
+   * Local auth mode has no e-mail delivery: an administrator resets the password instead.
+   */
+  async forgotPassword(email: string): Promise<void> {
+    if (this.env.AUTH_MODE !== 'cognito') throw new NotImplementedException('Password reset by e-mail is not available on this server. Ask an administrator to reset your password.');
+    const user = await this.prisma.user.findUnique({ where: { email } });
+    if (!user?.isActive) return;
+    try {
+      await this.cognito!.send(new ForgotPasswordCommand({ ClientId: this.env.COGNITO_CLIENT_ID!, Username: email }));
+    } catch (e) {
+      // Do not leak account state (e.g. UserNotFound, NotAuthorized for unconfirmed users).
+      this.logger.warn(`Cognito forgot-password failed: ${(e as Error).name}`);
+    }
+  }
+
+  async confirmPasswordReset(email: string, code: string, newPassword: string): Promise<void> {
+    if (this.env.AUTH_MODE !== 'cognito') throw new NotImplementedException('Password reset by e-mail is not available on this server.');
+    try {
+      await this.cognito!.send(new ConfirmForgotPasswordCommand({ ClientId: this.env.COGNITO_CLIENT_ID!, Username: email, ConfirmationCode: code, Password: newPassword }));
+    } catch (e) {
+      const name = (e as Error).name;
+      this.logger.warn(`Cognito confirm-forgot-password failed: ${name}`);
+      if (name === 'InvalidPasswordException') throw new BadRequestException('The new password does not meet the password policy');
+      throw new BadRequestException('Invalid or expired code');
+    }
+  }
+
+  /**
+   * Administrator resets a user's password. Cognito: the user gets an e-mailed code and completes
+   * it on the "Forgot password" page. Local mode: the admin sets a temporary password.
+   */
+  async adminResetPassword(email: string, temporaryPassword?: string): Promise<{ passwordHash?: string; mode: 'email' | 'temporary' }> {
+    if (this.env.AUTH_MODE === 'local') {
+      if (!temporaryPassword) throw new BadRequestException('temporaryPassword is required in local auth mode');
+      return { passwordHash: await bcrypt.hash(temporaryPassword, 10), mode: 'temporary' };
+    }
+    await this.cognito!.send(new AdminResetUserPasswordCommand({ UserPoolId: this.env.COGNITO_USER_POOL_ID!, Username: email }));
+    return { mode: 'email' };
   }
 
   /** Provision a login for a newly invited user. */

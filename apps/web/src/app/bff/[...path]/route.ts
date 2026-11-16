@@ -1,6 +1,6 @@
 import { cookies } from 'next/headers';
 import { NextResponse, type NextRequest } from 'next/server';
-import { ACCESS_COOKIE, apiBase, clearSessionCookies, isSameOrigin, REFRESH_COOKIE, refreshTokens, setSessionCookies } from '@/lib/server-session';
+import { ACCESS_COOKIE, apiBase, clearSessionCookies, clientIpHeaders, isSameOrigin, REFRESH_COOKIE, refreshTokens, setSessionCookies } from '@/lib/server-session';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,7 +23,10 @@ async function handler(req: NextRequest, ctx: { params: Promise<{ path: string[]
         Accept: 'application/json',
         ...(body ? { 'Content-Type': req.headers.get('content-type') ?? 'application/json' } : {}),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...clientIpHeaders(req),
         ...(req.headers.get('accept-language') ? { 'Accept-Language': req.headers.get('accept-language')! } : {}),
+        // The API labels push subscriptions by the browser's user agent (display/diagnostics only).
+        ...(req.headers.get('user-agent') ? { 'User-Agent': req.headers.get('user-agent')!.slice(0, 512) } : {}),
       },
       body,
       cache: 'no-store',
@@ -33,7 +36,7 @@ async function handler(req: NextRequest, ctx: { params: Promise<{ path: string[]
   let refreshed: Awaited<ReturnType<typeof refreshTokens>> = null;
   const refreshToken = jar.get(REFRESH_COOKIE)?.value;
   if (upstream.status === 401 && refreshToken) {
-    refreshed = await refreshTokens(refreshToken);
+    refreshed = await refreshTokens(refreshToken, clientIpHeaders(req));
     if (refreshed) upstream = await forward(refreshed.accessToken);
   }
 

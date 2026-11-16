@@ -1,16 +1,19 @@
-# DailyTasks
+# Al-Rasiyat · الراسيات — Task Management
 
-Task management for one company: admins create projects and invite people, project managers assign tasks with deadlines and files, employees reply and complete tasks from their phone, and managers privately rate completed work.
+Arabic-first task management platform for Al-Rasiyat (repository/package name: `dailytasks`). One company: admins create projects and invite people, project managers assign tasks with deadlines and files, employees reply and complete tasks from their phone, and managers privately rate completed work.
 
 There is **no native mobile app**: one responsive Next.js web app serves desktop and phones, and installs to the iPhone/Android Home Screen as a PWA (see [docs/PWA.md](docs/PWA.md)).
 
 | Part | Tech | Status |
 |---|---|---|
 | API | NestJS 11, Prisma 6, PostgreSQL 16, Swagger | ✅ |
-| Worker | Node 22, SQS, EventBridge Scheduler, Expo Push | ✅ |
-| Web app (desktop + phones, installable PWA) | Next.js 15, Tailwind 4, React Query, English/Arabic (RTL), manifest + service worker | ✅ |
-| Push notifications | Expo Push today → Web Push migration pending | ⚠️ |
-| Infrastructure | Docker Compose (local), AWS CDK (ECS Fargate, RDS, S3, SQS, Cognito, CloudWatch) | ✅ synth-verified, not deployed |
+| Worker | Node 22, SQS, EventBridge Scheduler, Web Push (VAPID) | ✅ |
+| Web app (desktop + phones, installable PWA) | Next.js 15, Tailwind 4, React Query, Arabic-first (RTL) + English, Al-Rasiyat design system, manifest + service worker | ✅ |
+| Real-time updates | WebSocket on the API, Postgres LISTEN/NOTIFY fan-out | ✅ |
+| Push notifications | Web Push to installed PWA (iOS 16.4+, Android) and desktop browsers | ✅ (real-device checklist pending) |
+| Infrastructure | Docker Compose (local), AWS CDK (ECS Fargate, ALB + HTTPS, Route 53/ACM, RDS, S3, SQS, Scheduler, Cognito, CloudWatch, Secrets Manager) | ✅ synth-verified, not deployed |
+
+> **Not production-ready yet:** real-device push testing on a physical iPhone and Android phone (docs/REAL_DEVICE_TESTS.md) has not been done.
 
 ## Quick start (Docker)
 
@@ -59,7 +62,8 @@ pnpm dev:web        # http://localhost:3001
 pnpm lint
 pnpm typecheck
 pnpm test            # unit + integration (requires the compose Postgres)
-pnpm test:docker     # end-to-end against the running compose stack
+pnpm test:docker     # API-level end-to-end against the running compose stack
+pnpm --filter @dailytasks/web test:e2e   # browser end-to-end (Playwright, installed Chrome) against the compose stack
 pnpm cdk:synth       # synthesize AWS CloudFormation (no deployment)
 ```
 
@@ -67,6 +71,10 @@ pnpm cdk:synth       # synthesize AWS CloudFormation (no deployment)
 - [Architecture](docs/ARCHITECTURE.md) — components, flows, security model
 - [Database](docs/DATABASE.md) — schema design and constraints
 - [Testing](docs/TESTING.md) — test strategy and the critical scenarios
+- [Design system](docs/DESIGN_SYSTEM.md) — brand colours from the logo, tokens, components
 - [PWA](docs/PWA.md) — installing on iPhone/Android, service worker, offline, mobile UI
-- [Deployment](docs/DEPLOYMENT.md) — AWS setup, staging/production, migrations
+- [Push notifications](docs/PUSH_NOTIFICATIONS.md) — Web Push architecture, API, config, real-device checklist
+- [Deployment](docs/DEPLOYMENT.md) — AWS architecture, HTTPS/domain, environment variables, setup, cost estimate
+- [Security audit](docs/SECURITY_AUDIT.md) — production-readiness review and fixes
+- [Real-device tests](docs/REAL_DEVICE_TESTS.md) — iPhone/Android test record (**not yet executed**)
 - [Implementation plan](docs/IMPLEMENTATION_PLAN.md) — phases, status, remaining work

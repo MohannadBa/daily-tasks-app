@@ -20,16 +20,18 @@ export function clearSessionCookies(res: NextResponse) {
   res.cookies.set(REFRESH_COOKIE, '', { path: '/', maxAge: 0 });
 }
 
-export async function refreshTokens(refreshToken: string): Promise<AuthTokens | null> {
+export async function refreshTokens(refreshToken: string, extraHeaders: Record<string, string> = {}): Promise<AuthTokens | null> {
   const res = await fetch(`${apiBase()}/auth/refresh`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...extraHeaders },
     body: JSON.stringify({ refreshToken }),
     cache: 'no-store',
   });
   if (!res.ok) return null;
   return (await res.json()) as AuthTokens;
 }
+
+export { clientIpHeaders } from './client-ip';
 
 /** Basic CSRF defence for cookie-authenticated mutations: the Origin must match this host. */
 export function isSameOrigin(req: Request): boolean {

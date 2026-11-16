@@ -5,7 +5,7 @@ import { Suspense, useState } from 'react';
 import type { TaskView } from '@dailytasks/shared-types';
 import { useIsManager } from '@/components/providers';
 import { TaskTable } from '@/components/task-table';
-import { Button, Card, ErrorBox, Input, LinkButton, PageHeader, Select, Spinner, Tabs } from '@/components/ui';
+import { Button, Card, ErrorBox, Input, LinkButton, PageHeader, Select, SkeletonList, Spinner, Tabs } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useT } from '@/lib/i18n';
 
@@ -16,13 +16,14 @@ function TasksInner() {
   const { t } = useT();
   const view = (params.get('view') as TaskView) || 'all';
   const projectId = params.get('projectId') ?? '';
+  const sort = params.get('sort') ?? '';
   const page = Number(params.get('page') ?? 1);
   const [q, setQ] = useState(params.get('q') ?? '');
 
   const projects = useQuery({ queryKey: ['projects'], queryFn: () => api.projects.list() });
   const tasks = useQuery({
-    queryKey: ['tasks', view, projectId, params.get('q'), page],
-    queryFn: () => api.tasks.list({ view, projectId: projectId || undefined, q: params.get('q') || undefined, page, pageSize: 25 }),
+    queryKey: ['tasks', view, projectId, params.get('q'), sort, page],
+    queryFn: () => api.tasks.list({ view, projectId: projectId || undefined, q: params.get('q') || undefined, sort: sort || undefined, page, pageSize: 25 }),
     placeholderData: keepPreviousData,
   });
 
@@ -66,12 +67,20 @@ function TasksInner() {
               </option>
             ))}
           </Select>
+          <Select className="order-last col-span-2 sm:order-none sm:col-span-1 sm:max-w-[13rem]" value={sort} onChange={(e) => setParam({ sort: e.target.value || undefined })} aria-label={t('Sort by')}>
+            <option value="">{t('Sort: default')}</option>
+            <option value="deadline">{t('Deadline: soonest first')}</option>
+            <option value="-deadline">{t('Deadline: latest first')}</option>
+            <option value="-created">{t('Newest first')}</option>
+            <option value="-updated">{t('Recently updated')}</option>
+            <option value="title">{t('Title A–Z')}</option>
+          </Select>
           <Button type="submit" variant="secondary">
             {t('Search')}
           </Button>
         </form>
         <ErrorBox error={tasks.error} />
-        {tasks.isLoading ? <Spinner /> : tasks.data && <TaskTable tasks={tasks.data.items} />}
+        {tasks.isLoading ? <SkeletonList rows={6} /> : tasks.data && <TaskTable tasks={tasks.data.items} />}
         {tasks.data && tasks.data.total > tasks.data.pageSize && (
           <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm text-slate-500">
             <span>

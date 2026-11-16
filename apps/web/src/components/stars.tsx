@@ -16,7 +16,7 @@ export function Stars({ value, size = 16 }: { value: number | null; size?: numbe
           <span key={i} className="relative inline-block" style={{ width: size, height: size }}>
             <Star className="absolute inset-0 text-slate-300" style={{ width: size, height: size }} aria-hidden />
             <span className="absolute inset-y-0 start-0 overflow-hidden" style={{ width: `${fill * 100}%` }}>
-              <Star className="fill-amber-400 text-amber-400" style={{ width: size, height: size }} aria-hidden />
+              <Star className="fill-brand-500 text-brand-500" style={{ width: size, height: size }} aria-hidden />
             </span>
           </span>
         );
@@ -43,7 +43,7 @@ export function StarInput({ value, onChange, disabled }: { value: number; onChan
           onClick={() => onChange(i)}
           className="rounded p-1 focus:outline-none sm:p-0.5 focus-visible:ring-2 focus-visible:ring-brand-500"
         >
-          <Star className={clsx('h-9 w-9 transition sm:h-7 sm:w-7', i <= shown ? 'fill-amber-400 text-amber-400' : 'text-slate-300')} aria-hidden />
+          <Star className={clsx('h-9 w-9 transition sm:h-7 sm:w-7', i <= shown ? 'fill-brand-500 text-brand-500' : 'text-slate-300')} aria-hidden />
         </button>
       ))}
     </div>

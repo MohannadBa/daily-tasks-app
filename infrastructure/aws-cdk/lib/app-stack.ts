@@ -1,4 +1,4 @@
-import { CfnOutput, Duration, RemovalPolicy, Stack, Tags, type StackProps } from 'aws-cdk-lib';
+import { Annotations, CfnOutput, Duration, RemovalPolicy, Stack, Tags, type StackProps } from 'aws-cdk-lib';
 import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as cwActions from 'aws-cdk-lib/aws-cloudwatch-actions';
@@ -10,6 +10,8 @@ import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as rds from 'aws-cdk-lib/aws-rds';
+import * as route53 from 'aws-cdk-lib/aws-route53';
+import * as route53Targets from 'aws-cdk-lib/aws-route53-targets';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as scheduler from 'aws-cdk-lib/aws-scheduler';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
@@ -24,14 +26,31 @@ export interface AppStackProps extends StackProps {
   config: EnvironmentConfig;
   /** Immutable image tag pushed to ECR (git SHA / release version). */
   imageTag: string;
-  /** Optional ACM certificate for HTTPS on the ALB. Without it the ALB listens on HTTP only (staging). */
+  /**
+   * Existing ACM certificate (same region) for HTTPS on the ALB. Alternatively give `domainName` +
+   * hosted zone and the stack creates a DNS-validated certificate. HTTPS is REQUIRED in production:
+   * service workers, PWA install, Web Push and Secure cookies do not work over plain HTTP on phones.
+   */
   certificateArn?: string;
-  /** Public URL of the web portal (e.g. https://tasks.example.com). Defaults to the ALB DNS name. */
+  /** Custom domain for the app, e.g. tasks.example.com. Used for the certificate, DNS alias and publicUrl. */
+  domainName?: string;
+  /** Route 53 hosted zone that contains `domainName` (id + name). Enables the alias record and auto certificate. */
+  hostedZoneId?: string;
+  hostedZoneName?: string;
+  /** Public URL of the app (e.g. https://tasks.example.com). Defaults to https://<domainName>, else the ALB DNS name. */
   publicUrl?: string;
   /** E-mail address subscribed to CloudWatch alarms. */
   alarmEmail?: string;
-  /** Existing Secrets Manager secret holding the Expo access token (optional). */
-  expoAccessTokenSecretArn?: string;
+  /**
+   * Web Push (VAPID). Generate with `pnpm push:keys`. The public key is public by design (given to
+   * browsers); the private key lives only in Secrets Manager and is injected into the worker only.
+   * Without both, notifications are still stored in-app but not pushed.
+   */
+  vapidPublicKey?: string;
+  /** ARN of a Secrets Manager secret whose SecretString is the VAPID private key. */
+  vapidPrivateKeySecretArn?: string;
+  /** VAPID contact ("sub" claim) push services can use to reach the operator: mailto:… or https://… */
+  vapidSubject?: string;
 }
 
 /**
@@ -104,8 +123,32 @@ export class AppStack extends Stack {
       }),
     );
 
+    /* --------------------------- HTTPS & domain ------------------------ */
+    const zone =
+      props.hostedZoneId && props.hostedZoneName
+        ? route53.HostedZone.fromHostedZoneAttributes(this, 'Zone', { hostedZoneId: props.hostedZoneId, zoneName: props.hostedZoneName })
+        : undefined;
+    const certificate = props.certificateArn
+      ? acm.Certificate.fromCertificateArn(this, 'Cert', props.certificateArn)
+      : props.domainName && zone
+        ? new acm.Certificate(this, 'Certificate', { domainName: props.domainName, validation: acm.CertificateValidation.fromDns(zone) })
+        : undefined;
+    const https = !!certificate;
+    const publicUrl = props.publicUrl ?? (props.domainName ? `https://${props.domainName}` : undefined);
+    if (isProd && !https) {
+      Annotations.of(this).addError(
+        'Production requires HTTPS: pass -c production:certificateArn=<acm arn> or -c production:domainName=<host> with production:hostedZoneId/hostedZoneName. ' +
+          'Service workers, PWA install, Web Push and Secure cookies do not work over HTTP.',
+      );
+    }
+    if (isProd && (!publicUrl || !publicUrl.startsWith('https://'))) {
+      Annotations.of(this).addError('Production requires a custom https domain: set production:domainName (or production:publicUrl=https://...).');
+    }
+    if (!isProd && !https) {
+      Annotations.of(this).addWarning('No HTTPS certificate: the app works in desktop browsers, but PWA install, the service worker and push notifications will NOT work on phones.');
+    }
+
     /* ------------------------------ Storage ---------------------------- */
-    const publicUrl = props.publicUrl;
     const bucket = new s3.Bucket(this, 'Attachments', {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
@@ -187,8 +230,8 @@ export class AppStack extends Stack {
       mfa: cognito.Mfa.OPTIONAL,
       mfaSecondFactor: { sms: false, otp: true },
       userInvitation: {
-        emailSubject: 'Your DailyTasks account',
-        emailBody: 'You have been invited to DailyTasks. Sign in with {username} and temporary password {####}.',
+        emailSubject: 'حسابك في الراسيات · Your Al-Rasiyat account',
+        emailBody: 'تمت دعوتك إلى منصة مهام الراسيات. اسم المستخدم: {username} — كلمة المرور المؤقتة: {####}<br><br>You have been invited to Al-Rasiyat. Sign in with {username} and temporary password {####}.',
       },
       removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
     });
@@ -212,8 +255,12 @@ export class AppStack extends Stack {
     });
 
     const albSg = new ec2.SecurityGroup(this, 'AlbSg', { vpc, description: 'Public load balancer' });
-    const alb = new elbv2.ApplicationLoadBalancer(this, 'Alb', { vpc, internetFacing: true, securityGroup: albSg, dropInvalidHeaderFields: true });
-    const appUrl = publicUrl ?? `${props.certificateArn ? 'https' : 'http'}://${alb.loadBalancerDnsName}`;
+    // WebSockets (/api/v1/realtime) pass through the ALB; the API pings every 25 s, well inside the idle timeout.
+    const alb = new elbv2.ApplicationLoadBalancer(this, 'Alb', { vpc, internetFacing: true, securityGroup: albSg, dropInvalidHeaderFields: true, idleTimeout: Duration.seconds(120) });
+    const appUrl = publicUrl ?? `${https ? 'https' : 'http'}://${alb.loadBalancerDnsName}`;
+    if (zone && props.domainName) {
+      new route53.ARecord(this, 'AppAlias', { zone, recordName: props.domainName, target: route53.RecordTarget.fromAlias(new route53Targets.LoadBalancerTarget(alb)) });
+    }
 
     const repos = new Map<RepositoryName, ecr.IRepository>();
     const image = (name: RepositoryName) => {
@@ -235,6 +282,8 @@ export class AppStack extends Stack {
       DB_PASSWORD: ecs.Secret.fromSecretsManager(dbSecret, 'password'),
       DB_NAME: ecs.Secret.fromSecretsManager(dbSecret, 'dbname'),
     };
+    const pushConfigured = !!(props.vapidPublicKey && props.vapidPrivateKeySecretArn);
+    const vapidPublic: Record<string, string> = pushConfigured ? { WEB_PUSH_VAPID_PUBLIC_KEY: props.vapidPublicKey! } : {};
     const sharedEnv = {
       NODE_ENV: 'production',
       LOG_LEVEL: 'info',
@@ -266,6 +315,7 @@ export class AppStack extends Stack {
         CORS_ORIGINS: appUrl,
         SWAGGER_ENABLED: isProd ? 'false' : 'true',
         RUN_MIGRATIONS: 'false', // migrations run as a one-off task (see docs/DEPLOYMENT.md)
+        ...vapidPublic,
       },
       secrets: dbSecrets,
       healthCheck: {
@@ -278,7 +328,7 @@ export class AppStack extends Stack {
     bucket.grantReadWrite(apiTd.taskRole);
     apiTd.taskRole.addToPrincipalPolicy(
       new iam.PolicyStatement({
-        actions: ['cognito-idp:AdminCreateUser', 'cognito-idp:AdminDisableUser', 'cognito-idp:AdminEnableUser'],
+        actions: ['cognito-idp:AdminCreateUser', 'cognito-idp:AdminDisableUser', 'cognito-idp:AdminEnableUser', 'cognito-idp:AdminResetUserPassword'],
         resources: [userPool.userPoolArn],
       }),
     );
@@ -319,12 +369,15 @@ export class AppStack extends Stack {
         SCHEDULER_GROUP_NAME: scheduleGroup.name!,
         SCHEDULER_TARGET_QUEUE_ARN: queue.queueArn,
         SCHEDULER_ROLE_ARN: schedulerRole.roleArn,
-        PUSH_ENABLED: 'true',
+        PUSH_ENABLED: pushConfigured ? 'true' : 'false',
+        ...vapidPublic,
+        WEB_PUSH_SUBJECT: props.vapidSubject ?? (props.alarmEmail ? `mailto:${props.alarmEmail}` : appUrl.startsWith('https://') ? appUrl : 'mailto:admin@dailytasks.local'),
       },
       secrets: {
         ...dbSecrets,
-        ...(props.expoAccessTokenSecretArn
-          ? { EXPO_ACCESS_TOKEN: ecs.Secret.fromSecretsManager(secretsmanager.Secret.fromSecretCompleteArn(this, 'ExpoToken', props.expoAccessTokenSecretArn)) }
+        // Private key: worker only (the API never sees it).
+        ...(pushConfigured
+          ? { WEB_PUSH_VAPID_PRIVATE_KEY: ecs.Secret.fromSecretsManager(secretsmanager.Secret.fromSecretCompleteArn(this, 'VapidPrivateKey', props.vapidPrivateKeySecretArn!)) }
           : {}),
       },
       healthCheck: {
@@ -334,6 +387,8 @@ export class AppStack extends Stack {
       },
       stopTimeout: Duration.seconds(30),
     });
+    // Worker removes abandoned (never confirmed) uploads.
+    bucket.grantDelete(workerTd.taskRole);
     queue.grantConsumeMessages(workerTd.taskRole);
     queue.grantSendMessages(workerTd.taskRole);
     workerTd.taskRole.addToPrincipalPolicy(
@@ -373,6 +428,26 @@ export class AppStack extends Stack {
       }),
     );
 
+    // Push delivery failures (push service errors, timeouts, retries exhausted). Expired
+    // subscriptions (404/410) are normal churn and are not counted.
+    new logs.MetricFilter(this, 'PushFailuresFilter', {
+      logGroup: workerLogs,
+      metricNamespace: 'DailyTasks',
+      metricName: `${cfg.name}-push-failures`,
+      filterPattern: logs.FilterPattern.stringValue('$.msg', '=', 'push delivery failed'),
+      metricValue: '1',
+      defaultValue: 0,
+    });
+    alarm(
+      new cloudwatch.Alarm(this, 'PushFailuresAlarm', {
+        metric: new cloudwatch.Metric({ namespace: 'DailyTasks', metricName: `${cfg.name}-push-failures`, statistic: 'Sum', period: Duration.minutes(15) }),
+        threshold: 25,
+        evaluationPeriods: 1,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+        alarmDescription: 'Web Push deliveries are failing (check VAPID keys, push service status, worker logs)',
+      }),
+    );
+
     // --- Web ---
     const webSg = new ec2.SecurityGroup(this, 'WebSg', { vpc, description: 'Web tasks' });
     const webTd = taskDef('Web', cfg.web);
@@ -385,7 +460,7 @@ export class AppStack extends Stack {
         PORT: '3000',
         // Server-side BFF calls the API over Cloud Map inside the VPC.
         API_INTERNAL_URL: `http://api.${prefix}.local:3000/api/v1`,
-        COOKIE_SECURE: props.certificateArn ? 'true' : 'false',
+        COOKIE_SECURE: https ? 'true' : 'false',
       },
       healthCheck: {
         command: ['CMD-SHELL', "node -e \"fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""],
@@ -412,14 +487,10 @@ export class AppStack extends Stack {
     dbSg.addIngressRule(workerSg, ec2.Port.tcp(5432), 'Worker to DB');
 
     /* --------------------------- Load balancer -------------------------- */
-    const listener = props.certificateArn
-      ? alb.addListener('Https', {
-          port: 443,
-          certificates: [acm.Certificate.fromCertificateArn(this, 'Cert', props.certificateArn)],
-          sslPolicy: elbv2.SslPolicy.RECOMMENDED_TLS,
-        })
+    const listener = certificate
+      ? alb.addListener('Https', { port: 443, certificates: [certificate], sslPolicy: elbv2.SslPolicy.RECOMMENDED_TLS })
       : alb.addListener('Http', { port: 80 });
-    if (props.certificateArn) alb.addRedirect({ sourcePort: 80, targetPort: 443 });
+    if (certificate) alb.addRedirect({ sourcePort: 80, targetPort: 443 });
 
     listener.addTargets('Web', {
       port: 3000,
