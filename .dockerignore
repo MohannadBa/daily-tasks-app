@@ -1,0 +1,14 @@
+**/node_modules
+**/dist
+**/.next
+**/coverage
+**/cdk.out
+**/.expo
+**/*.tsbuildinfo
+.git
+.env
+.env.*
+!.env.example
+apps/mobile
+infrastructure
+docs

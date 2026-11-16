@@ -1,0 +1,25 @@
+{
+  "name": "@dailytasks/aws-cdk",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "synth": "cdk synth --quiet",
+    "diff": "cdk diff",
+    "deploy:registry": "cdk deploy DailyTasks-Registry",
+    "deploy:staging": "cdk deploy DailyTasks-staging",
+    "deploy:production": "cdk deploy DailyTasks-production",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint bin lib test",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.215.0",
+    "constructs": "^10.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "aws-cdk": "^2.1029.0",
+    "tsx": "^4.20.5",
+    "vitest": "^3.2.4"
+  }
+}

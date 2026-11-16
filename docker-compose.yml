@@ -1,0 +1,138 @@
+# DailyTasks local development stack.
+#   docker compose up --build      build & run everything
+#   docker compose down            stop (volumes are kept)
+# The Expo mobile dev server runs on the host and talks to the API on http://<host-ip>:3000.
+name: dailytasks
+
+x-aws-env: &aws-env
+  AWS_REGION: us-east-1
+  # LocalStack accepts any credentials; real AWS uses the ECS task role (never set keys there).
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+  AWS_ENDPOINT_URL: http://localstack:4566
+  S3_BUCKET: dailytasks-attachments
+  S3_FORCE_PATH_STYLE: "true"
+  SQS_EVENTS_QUEUE_URL: http://localstack:4566/000000000000/dailytasks-events
+  DATABASE_URL: postgresql://${POSTGRES_USER:-dailytasks}:${POSTGRES_PASSWORD:-dailytasks}@postgres:5432/${POSTGRES_DB:-dailytasks}?schema=public
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-dailytasks}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dailytasks}
+      POSTGRES_DB: ${POSTGRES_DB:-dailytasks}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  localstack:
+    image: localstack/localstack:3.8.1
+    restart: unless-stopped
+    environment:
+      SERVICES: s3,sqs
+      AWS_DEFAULT_REGION: us-east-1
+      S3_BUCKET: dailytasks-attachments
+      SQS_QUEUE_NAME: dailytasks-events
+      PERSISTENCE: "0"
+    ports:
+      - "${LOCALSTACK_PORT:-4566}:4566"
+    volumes:
+      - ./docker/localstack/init-aws.sh:/etc/localstack/init/ready.d/init-aws.sh:ro
+      - localstack-data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:4566/_localstack/init/ready | grep -q '\"completed\": true'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # One-off: apply migrations (and demo seed in development), then exit.
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    image: dailytasks-api:local
+    command: ["migrate"]
+    environment:
+      <<: *aws-env
+      NODE_ENV: development
+      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    image: dailytasks-api:local
+    restart: unless-stopped
+    environment:
+      <<: *aws-env
+      NODE_ENV: development
+      PORT: 3000
+      AUTH_MODE: local
+      JWT_SECRET: ${JWT_SECRET:-local-development-only-secret-change-me-0123456789}
+      # Where browsers/phones reach LocalStack S3 for pre-signed URLs. Use your LAN IP for a physical phone.
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:4566}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3001,http://localhost:8081}
+      SWAGGER_ENABLED: "true"
+    ports:
+      - "${API_PORT:-3000}:3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      localstack:
+        condition: service_healthy
+    stop_grace_period: 20s
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/worker/Dockerfile
+    image: dailytasks-worker:local
+    restart: unless-stopped
+    environment:
+      <<: *aws-env
+      NODE_ENV: development
+      SCHEDULER_MODE: local
+      PUSH_ENABLED: ${PUSH_ENABLED:-true}
+      EXPO_ACCESS_TOKEN: ${EXPO_ACCESS_TOKEN:-}
+      LOCAL_SCHEDULER_POLL_INTERVAL_MS: 5000
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      localstack:
+        condition: service_healthy
+    stop_grace_period: 30s
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/web/Dockerfile
+    image: dailytasks-web:local
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      API_INTERNAL_URL: http://api:3000/api/v1
+      # Cookies are only marked Secure when served over HTTPS (AWS); plain http locally.
+      COOKIE_SECURE: "false"
+    ports:
+      - "${WEB_PORT:-3001}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  localstack-data:

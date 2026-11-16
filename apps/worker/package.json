@@ -1,0 +1,26 @@
+{
+  "name": "@dailytasks/worker",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src test",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@aws-sdk/client-scheduler": "^3.890.0",
+    "@aws-sdk/client-sqs": "^3.890.0",
+    "@dailytasks/config": "workspace:*",
+    "@dailytasks/database": "workspace:*",
+    "@dailytasks/shared-types": "workspace:*",
+    "expo-server-sdk": "^3.15.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "tsx": "^4.20.5",
+    "vitest": "^3.2.4"
+  }
+}

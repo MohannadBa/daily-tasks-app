@@ -1,0 +1,44 @@
+{
+  "name": "dailytasks",
+  "private": true,
+  "version": "1.0.0",
+  "description": "DailyTasks - company task management platform (API, worker, web portal, mobile app)",
+  "packageManager": "pnpm@10.34.9",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "build:packages": "pnpm --filter \"./packages/**\" run build",
+    "build": "pnpm build:packages && pnpm --filter @dailytasks/api --filter @dailytasks/worker --filter @dailytasks/web run build",
+    "typecheck": "pnpm -r --parallel run typecheck",
+    "lint": "pnpm -r --parallel run lint",
+    "test": "pnpm -r --workspace-concurrency=1 run test",
+    "db:generate": "pnpm --filter @dailytasks/database run generate",
+    "db:migrate": "pnpm --filter @dailytasks/database run migrate:deploy",
+    "db:seed": "pnpm --filter @dailytasks/database run seed",
+    "dev:api": "pnpm --filter @dailytasks/api run dev",
+    "dev:worker": "pnpm --filter @dailytasks/worker run dev",
+    "dev:web": "pnpm --filter @dailytasks/web run dev",
+    "dev:mobile": "pnpm --filter @dailytasks/mobile run start",
+    "test:docker": "node scripts/docker-smoke-test.mjs",
+    "cdk:synth": "pnpm --filter @dailytasks/aws-cdk run synth"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.36.0",
+    "eslint": "^9.36.0",
+    "globals": "^16.4.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.44.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@prisma/client",
+      "@prisma/engines",
+      "prisma",
+      "esbuild",
+      "bcrypt",
+      "sharp",
+      "unrs-resolver"
+    ]
+  }
+}

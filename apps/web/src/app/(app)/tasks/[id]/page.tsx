@@ -1,0 +1,350 @@
+'use client';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Calendar, CheckCircle2, Download, FileText, History, Pencil, RotateCcw, UserRound } from 'lucide-react';
+import Link from 'next/link';
+import { useParams } from 'next/navigation';
+import { useEffect, useState, type ReactNode } from 'react';
+import type { AttachmentDto, TaskDetailDto, TaskHistoryDto } from '@dailytasks/shared-types';
+import { FilePicker } from '@/components/file-picker';
+import { StarInput, Stars } from '@/components/stars';
+import { StatusBadge } from '@/components/task-table';
+import { Badge, Button, Card, Empty, ErrorBox, Field, Input, Select, Spinner, Textarea } from '@/components/ui';
+import { api } from '@/lib/api';
+import { openAttachment, uploadFiles } from '@/lib/files';
+import { formatBytes, formatDateTime, formatRelative, isoToLocalInput, localInputToIso } from '@/lib/format';
+import { useT } from '@/lib/i18n';
+
+function AttachmentList({ items }: { items: AttachmentDto[] }) {
+  if (items.length === 0) return null;
+  return (
+    <ul className="mt-2 flex flex-wrap gap-2">
+      {items.map((a) => (
+        <li key={a.id}>
+          <button
+            onClick={() => void openAttachment(a.id)}
+            className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 hover:border-brand-500 hover:text-brand-700"
+          >
+            <FileText className="h-4 w-4" aria-hidden />
+            <span className="max-w-[16rem] truncate">{a.fileName}</span>
+            <span className="text-xs text-slate-400">{formatBytes(a.sizeBytes)}</span>
+            <Download className="h-3.5 w-3.5" aria-hidden />
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function Meta({ icon, label, children }: { icon: ReactNode; label: string; children: ReactNode }) {
+  return (
+    <div className="flex items-start gap-3">
+      <span className="mt-0.5 text-slate-400">{icon}</span>
+      <div>
+        <p className="text-xs uppercase tracking-wide text-slate-500">{label}</p>
+        <div className="text-sm text-slate-900">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+const historyLabel: Record<string, string> = {
+  CREATED: 'created the task',
+  UPDATED: 'updated the task',
+  DEADLINE_CHANGED: 'changed the deadline',
+  REASSIGNED: 'reassigned the task',
+  STARTED: 'started working',
+  COMMENTED: 'commented',
+  ATTACHMENT_ADDED: 'added an attachment',
+  COMPLETED: 'completed the task',
+  REOPENED: 'reopened the task',
+};
+
+function HistoryList({ items }: { items: TaskHistoryDto[] }) {
+  const { t } = useT();
+  return (
+    <ol className="space-y-3">
+      {[...items].reverse().map((h) => (
+        <li key={h.id} className="text-sm">
+          <span className="font-medium text-slate-800">{h.actor?.name ?? t('System')}</span> <span className="text-slate-600">{t(historyLabel[h.action] ?? h.action)}</span>
+          {h.action === 'REOPENED' && typeof h.metadata.reason === 'string' && <p className="mt-0.5 text-slate-500">“{h.metadata.reason}”</p>}
+          {h.action === 'COMPLETED' && h.metadata.completedLate === true && (
+            <span className="ms-1">
+              <Badge tone="amber">{t('late')}</Badge>
+            </span>
+          )}
+          <p className="text-xs text-slate-400">{formatDateTime(h.createdAt)}</p>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function RatingPanel({ task }: { task: TaskDetailDto }) {
+  const qc = useQueryClient();
+  const { t } = useT();
+  const rating = useQuery({ queryKey: ['rating', task.id], queryFn: () => api.tasks.getRating(task.id) });
+  const [stars, setStars] = useState(0);
+  const [feedback, setFeedback] = useState('');
+  const [editing, setEditing] = useState(false);
+  useEffect(() => {
+    if (rating.data) {
+      setStars(rating.data.stars);
+      setFeedback(rating.data.feedback ?? '');
+    }
+  }, [rating.data]);
+  const save = useMutation({
+    mutationFn: () => api.tasks.rate(task.id, { stars, feedback: feedback.trim() || null }),
+    onSuccess: async () => {
+      setEditing(false);
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['rating', task.id] }),
+        qc.invalidateQueries({ queryKey: ['task', task.id] }),
+        qc.invalidateQueries({ queryKey: ['tasks'] }),
+        qc.invalidateQueries({ queryKey: ['dashboard'] }),
+        qc.invalidateQueries({ queryKey: ['performance'] }),
+      ]);
+    },
+  });
+  if (rating.isLoading) return <Spinner />;
+  const existing = rating.data;
+  const showForm = !existing || editing;
+  return (
+    <Card title={t('Performance rating')} actions={<span className="text-xs text-slate-400">{t('Private · not visible to the employee')}</span>}>
+      <ErrorBox error={save.error} />
+      {!showForm && existing ? (
+        <div className="space-y-2">
+          <Stars value={existing.stars} size={22} />
+          {task.rating?.needsReview && <Badge tone="amber">{t('Task was completed again after this rating — review it')}</Badge>}
+          {existing.feedback && <p className="whitespace-pre-wrap text-sm text-slate-700">{existing.feedback}</p>}
+          <p className="text-xs text-slate-400">
+            {t('Rated by {name} · {date}', { name: existing.ratedBy.name, date: formatDateTime(existing.updatedAt) })}
+          </p>
+          <Button size="sm" variant="secondary" onClick={() => setEditing(true)}>
+            {t('Edit rating')}
+          </Button>
+        </div>
+      ) : (
+        <form
+          className="space-y-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (stars >= 1) save.mutate();
+          }}
+        >
+          <StarInput value={stars} onChange={setStars} />
+          <Field label={t('Private feedback (optional)')}>
+            <Textarea rows={3} maxLength={4000} value={feedback} onChange={(e) => setFeedback(e.target.value)} />
+          </Field>
+          <div className="flex gap-2">
+            <Button type="submit" loading={save.isPending} disabled={stars < 1}>
+              {t(existing ? 'Update rating' : 'Save rating')}
+            </Button>
+            {editing && (
+              <Button type="button" variant="ghost" onClick={() => setEditing(false)}>
+                {t('Cancel')}
+              </Button>
+            )}
+          </div>
+        </form>
+      )}
+    </Card>
+  );
+}
+
+function ManagerActions({ task }: { task: TaskDetailDto }) {
+  const qc = useQueryClient();
+  const { t } = useT();
+  const [mode, setMode] = useState<'none' | 'reopen' | 'reassign'>('none');
+  const [reason, setReason] = useState('');
+  const [deadline, setDeadline] = useState(isoToLocalInput(new Date(Math.max(Date.now() + 86400_000, new Date(task.deadline).getTime())).toISOString()));
+  const [assigneeId, setAssigneeId] = useState('');
+  const members = useQuery({ queryKey: ['members', task.projectId], queryFn: () => api.projects.members(task.projectId), enabled: mode === 'reassign' });
+  const refresh = () => Promise.all([qc.invalidateQueries({ queryKey: ['task', task.id] }), qc.invalidateQueries({ queryKey: ['history', task.id] }), qc.invalidateQueries({ queryKey: ['tasks'] })]);
+  const reopen = useMutation({ mutationFn: () => api.tasks.reopen(task.id, { reason, deadline: localInputToIso(deadline) }), onSuccess: () => { setMode('none'); return refresh(); } });
+  const reassign = useMutation({ mutationFn: () => api.tasks.reassign(task.id, assigneeId), onSuccess: () => { setMode('none'); return refresh(); } });
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap gap-2">
+        {task.permissions.canEdit && (
+          <Link href={`/tasks/${task.id}/edit`} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50">
+            <Pencil className="h-4 w-4" aria-hidden /> {t('Edit')}
+          </Link>
+        )}
+        {task.permissions.canEdit && (
+          <Button size="sm" variant="secondary" onClick={() => setMode(mode === 'reassign' ? 'none' : 'reassign')}>
+            <UserRound className="h-4 w-4" aria-hidden /> {t('Reassign')}
+          </Button>
+        )}
+        {task.permissions.canReopen && (
+          <Button size="sm" variant="secondary" onClick={() => setMode(mode === 'reopen' ? 'none' : 'reopen')}>
+            <RotateCcw className="h-4 w-4" aria-hidden /> {t('Reopen')}
+          </Button>
+        )}
+      </div>
+      {mode === 'reopen' && (
+        <form className="space-y-3 rounded-lg bg-slate-50 p-4" onSubmit={(e) => { e.preventDefault(); reopen.mutate(); }}>
+          <ErrorBox error={reopen.error} />
+          <Field label={t('Reason (recorded in history and sent to the employee)')}>
+            <Textarea rows={2} required value={reason} onChange={(e) => setReason(e.target.value)} />
+          </Field>
+          <Field label={t('New deadline')}>
+            <Input type="datetime-local" required value={deadline} onChange={(e) => setDeadline(e.target.value)} className="max-w-xs" />
+          </Field>
+          <Button size="sm" type="submit" loading={reopen.isPending}>{t('Reopen task')}</Button>
+        </form>
+      )}
+      {mode === 'reassign' && (
+        <form className="flex flex-wrap items-end gap-3 rounded-lg bg-slate-50 p-4" onSubmit={(e) => { e.preventDefault(); reassign.mutate(); }}>
+          <ErrorBox error={reassign.error} />
+          <Field label={t('New assignee')}>
+            <Select required value={assigneeId} onChange={(e) => setAssigneeId(e.target.value)}>
+              <option value="">{t('Select…')}</option>
+              {members.data?.filter((m) => m.role === 'EMPLOYEE' && m.userId !== task.assignee.id).map((m) => (
+                <option key={m.userId} value={m.userId}>{m.name}</option>
+              ))}
+            </Select>
+          </Field>
+          <Button size="sm" type="submit" loading={reassign.isPending}>{t('Reassign')}</Button>
+        </form>
+      )}
+    </div>
+  );
+}
+
+function ReplyBox({ task, completion }: { task: TaskDetailDto; completion: boolean }) {
+  const qc = useQueryClient();
+  const { t } = useT();
+  const [body, setBody] = useState('');
+  const [files, setFiles] = useState<File[]>([]);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const send = useMutation({
+    mutationFn: async () => {
+      const uploaded = files.length ? await uploadFiles(task.id, files) : [];
+      const attachmentIds = uploaded.map((a) => a.id);
+      if (completion) await api.tasks.complete(task.id, { comment: body.trim(), attachmentIds });
+      else await api.tasks.addComment(task.id, { body: body.trim(), attachmentIds });
+    },
+    onSuccess: async () => {
+      setBody('');
+      setFiles([]);
+      await Promise.all(['task', 'comments', 'history'].map((k) => qc.invalidateQueries({ queryKey: [k, task.id] })));
+      await qc.invalidateQueries({ queryKey: ['tasks'] });
+    },
+  });
+  return (
+    <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); if (body.trim()) send.mutate(); }}>
+      <ErrorBox error={send.error} />
+      <Textarea
+        rows={3}
+        required
+        value={body}
+        onChange={(e) => setBody(e.target.value)}
+        placeholder={t(completion ? 'Describe the completed work (required)…' : 'Write a reply…')}
+        aria-label={t(completion ? 'Completion comment' : 'Reply')}
+      />
+      <FilePicker files={files} onChange={setFiles} onError={setFileError} />
+      {fileError && <p className="text-xs text-red-600">{fileError}</p>}
+      <div className="flex justify-end">
+        <Button type="submit" loading={send.isPending} disabled={!body.trim()}>
+          {completion ? (<><CheckCircle2 className="h-4 w-4" aria-hidden /> {t('Mark as completed')}</>) : t('Send reply')}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+export default function TaskDetailPage() {
+  const { id } = useParams<{ id: string }>();
+  const task = useQuery({ queryKey: ['task', id], queryFn: () => api.tasks.get(id) });
+  const comments = useQuery({ queryKey: ['comments', id], queryFn: () => api.tasks.comments(id), enabled: !!task.data });
+  const history = useQuery({ queryKey: ['history', id], queryFn: () => api.tasks.history(id), enabled: !!task.data });
+  const [completing, setCompleting] = useState(false);
+  const { t } = useT();
+
+  if (task.isLoading) return <Spinner />;
+  if (task.error || !task.data) return <ErrorBox error={task.error ?? t('Task not found')} />;
+  const td = task.data;
+  const isManagerView = td.permissions.canEdit || td.permissions.canReopen;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <Link href={`/projects/${td.projectId}`} className="text-sm text-brand-700 hover:underline">{td.projectName}</Link>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">{td.title}</h1>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <StatusBadge task={td} />
+            {td.reopenCount > 0 && <Badge>{t('Reopened ×{n}', { n: td.reopenCount })}</Badge>}
+          </div>
+        </div>
+        {isManagerView && <ManagerActions task={td} />}
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-3">
+        <div className="min-w-0 space-y-6 lg:col-span-2">
+          <Card title={t('Details')}>
+            <div className="mb-5 grid gap-4 sm:grid-cols-3">
+              <Meta icon={<UserRound className="h-4 w-4" />} label={t('Assignee')}>{td.assignee.name}</Meta>
+              <Meta icon={<Calendar className="h-4 w-4" />} label={t('Deadline')}>
+                {formatDateTime(td.deadline)}
+                {td.status !== 'COMPLETED' && <span className={td.isOverdue ? 'block text-xs text-red-600' : 'block text-xs text-slate-500'}>{formatRelative(td.deadline)}</span>}
+              </Meta>
+              <Meta icon={<CheckCircle2 className="h-4 w-4" />} label={t('Completed')}>
+                {td.completedAt ? formatDateTime(td.completedAt) : '—'}
+                {td.completedLate && <span className="block text-xs text-amber-700">{t('after the deadline')}</span>}
+              </Meta>
+            </div>
+            {td.description ? <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">{td.description}</p> : <p className="text-sm text-slate-400">{t('No description')}</p>}
+            {td.attachments.length > 0 && (
+              <div className="mt-4">
+                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{t('Instructions & reference files')}</p>
+                <AttachmentList items={td.attachments} />
+              </div>
+            )}
+          </Card>
+
+          <Card title={t('Replies ({n})', { n: comments.data?.length ?? 0 })}>
+            {comments.isLoading ? (
+              <Spinner />
+            ) : comments.data && comments.data.length > 0 ? (
+              <ul className="space-y-4">
+                {comments.data.map((c) => (
+                  <li key={c.id} className={c.isCompletionNote ? 'rounded-lg border border-emerald-200 bg-emerald-50/50 p-4' : 'rounded-lg bg-slate-50 p-4'}>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-sm font-medium text-slate-900">{c.author.name}</span>
+                      <span className="text-xs text-slate-400">{formatDateTime(c.createdAt)}</span>
+                    </div>
+                    {c.isCompletionNote && <Badge tone="green">{t('Completion report')}</Badge>}
+                    <p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{c.body}</p>
+                    <AttachmentList items={c.attachments} />
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <Empty title={t('No replies yet')} />
+            )}
+            {td.permissions.canComment && (
+              <div className="mt-6 border-t border-slate-100 pt-4">
+                {td.permissions.canComplete && (
+                  <div className="mb-3 flex gap-2">
+                    <Button size="sm" variant={completing ? 'ghost' : 'secondary'} onClick={() => setCompleting(false)}>{t('Reply')}</Button>
+                    <Button size="sm" variant={completing ? 'secondary' : 'ghost'} onClick={() => setCompleting(true)}>{t('Complete task')}</Button>
+                  </div>
+                )}
+                <ReplyBox task={td} completion={completing && td.permissions.canComplete} />
+              </div>
+            )}
+          </Card>
+        </div>
+
+        <div className="space-y-6">
+          {td.permissions.canRate && <RatingPanel task={td} />}
+          <Card title={<span className="inline-flex items-center gap-2"><History className="h-4 w-4" aria-hidden /> {t('History')}</span>}>
+            {history.data ? <HistoryList items={history.data} /> : <Spinner />}
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+}

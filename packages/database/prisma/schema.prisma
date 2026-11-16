@@ -1,0 +1,364 @@
+// DailyTasks database schema. See docs/DATABASE.md for the design rationale.
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  COMPANY_ADMIN
+  PROJECT_MANAGER
+  EMPLOYEE
+}
+
+enum ProjectRole {
+  MANAGER
+  EMPLOYEE
+}
+
+enum ProjectStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum TaskStatus {
+  ASSIGNED
+  IN_PROGRESS
+  COMPLETED
+}
+
+enum TaskHistoryAction {
+  CREATED
+  UPDATED
+  DEADLINE_CHANGED
+  REASSIGNED
+  STARTED
+  COMMENTED
+  ATTACHMENT_ADDED
+  COMPLETED
+  REOPENED
+}
+
+enum AttachmentStatus {
+  PENDING
+  UPLOADED
+}
+
+enum NotificationType {
+  TASK_ASSIGNED
+  TASK_UPDATED
+  TASK_REASSIGNED
+  TASK_COMMENT_ADDED
+  TASK_COMPLETED
+  TASK_OVERDUE
+  TASK_DEADLINE_APPROACHING
+  TASK_REOPENED
+}
+
+enum DevicePlatform {
+  IOS
+  ANDROID
+  WEB
+}
+
+enum OutboxStatus {
+  PENDING
+  PUBLISHED
+  FAILED
+}
+
+model Company {
+  id                     String   @id @default(uuid()) @db.Uuid
+  name                   String
+  timezone               String   @default("UTC")
+  /// Minutes before a deadline at which reminders are sent. Default: 24h and 1h.
+  reminderOffsetsMinutes Int[]    @default([1440, 60])
+  createdAt              DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt              DateTime @updatedAt @db.Timestamptz(3)
+
+  users    User[]
+  projects Project[]
+}
+
+model User {
+  id           String    @id @default(uuid()) @db.Uuid
+  companyId    String    @db.Uuid
+  email        String    @unique
+  name         String
+  role         UserRole
+  locale       String    @default("en")
+  isActive     Boolean   @default(true)
+  /// Cognito "sub" claim (production). Null until first Cognito login links the account.
+  cognitoSub   String?   @unique
+  /// bcrypt hash, only used in AUTH_MODE=local (development/test).
+  passwordHash String?
+  lastLoginAt  DateTime? @db.Timestamptz(3)
+  createdAt    DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime  @updatedAt @db.Timestamptz(3)
+
+  company        Company              @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  memberships    ProjectMembership[]
+  assignedTasks  Task[]               @relation("TaskAssignee")
+  createdTasks   Task[]               @relation("TaskCreator")
+  comments       TaskComment[]
+  attachments    TaskAttachment[]
+  ratingsGiven   TaskRating[]         @relation("RatingRater")
+  ratingsGot     TaskRating[]         @relation("RatingEmployee")
+  ratingChanges  TaskRatingRevision[]
+  notifications  Notification[]
+  devices        DeviceInstallation[]
+  historyEntries TaskHistory[]
+
+  @@index([companyId, role])
+}
+
+model Project {
+  id          String        @id @default(uuid()) @db.Uuid
+  companyId   String        @db.Uuid
+  name        String
+  description String?
+  status      ProjectStatus @default(ACTIVE)
+  archivedAt  DateTime?     @db.Timestamptz(3)
+  createdAt   DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime      @updatedAt @db.Timestamptz(3)
+
+  company     Company             @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  memberships ProjectMembership[]
+  tasks       Task[]
+
+  @@index([companyId, status])
+}
+
+/// A user's role inside one project. Removal is a soft delete (removedAt) so history stays intact;
+/// all authorization checks require removedAt IS NULL.
+model ProjectMembership {
+  id        String      @id @default(uuid()) @db.Uuid
+  projectId String      @db.Uuid
+  userId    String      @db.Uuid
+  role      ProjectRole
+  removedAt DateTime?   @db.Timestamptz(3)
+  createdAt DateTime    @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime    @updatedAt @db.Timestamptz(3)
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([projectId, userId])
+  @@index([userId, removedAt])
+}
+
+model Task {
+  id              String     @id @default(uuid()) @db.Uuid
+  projectId       String     @db.Uuid
+  assigneeId      String     @db.Uuid
+  createdById     String     @db.Uuid
+  title           String
+  description     String     @default("")
+  deadline        DateTime   @db.Timestamptz(3)
+  status          TaskStatus @default(ASSIGNED)
+  startedAt       DateTime?  @db.Timestamptz(3)
+  completedAt     DateTime?  @db.Timestamptz(3)
+  /// Set at completion time (completedAt > deadline) and never recomputed by background jobs.
+  completedLate   Boolean?
+  reopenCount     Int        @default(0)
+  /// Incremented whenever deadline-related state changes; stale scheduled events are ignored.
+  scheduleVersion Int        @default(0)
+  archivedAt      DateTime?  @db.Timestamptz(3)
+  createdAt       DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime   @updatedAt @db.Timestamptz(3)
+
+  project     Project          @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  assignee    User             @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: Restrict)
+  createdBy   User             @relation("TaskCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  comments    TaskComment[]
+  attachments TaskAttachment[]
+  rating      TaskRating?
+  history     TaskHistory[]
+
+  @@index([projectId, status])
+  @@index([assigneeId, status])
+  @@index([status, deadline])
+}
+
+model TaskComment {
+  id               String   @id @default(uuid()) @db.Uuid
+  taskId           String   @db.Uuid
+  authorId         String   @db.Uuid
+  body             String
+  isCompletionNote Boolean  @default(false)
+  createdAt        DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime @updatedAt @db.Timestamptz(3)
+
+  task        Task             @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  author      User             @relation(fields: [authorId], references: [id], onDelete: Restrict)
+  attachments TaskAttachment[]
+
+  @@index([taskId, createdAt])
+}
+
+/// File metadata only. Binary content lives in private S3 under a random key.
+model TaskAttachment {
+  id           String           @id @default(uuid()) @db.Uuid
+  taskId       String           @db.Uuid
+  commentId    String?          @db.Uuid
+  uploadedById String           @db.Uuid
+  fileName     String
+  contentType  String
+  sizeBytes    Int
+  storageKey   String           @unique
+  status       AttachmentStatus @default(PENDING)
+  uploadedAt   DateTime?        @db.Timestamptz(3)
+  createdAt    DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime         @updatedAt @db.Timestamptz(3)
+
+  task       Task         @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  comment    TaskComment? @relation(fields: [commentId], references: [id], onDelete: Restrict)
+  uploadedBy User         @relation(fields: [uploadedById], references: [id], onDelete: Restrict)
+
+  @@index([taskId, status])
+  @@index([commentId])
+}
+
+/// One rating per task (unique taskId). Stars constrained to 1..5 by a CHECK constraint.
+/// Averages are always computed from these rows; no stored average exists.
+model TaskRating {
+  id         String   @id @default(uuid()) @db.Uuid
+  taskId     String   @unique @db.Uuid
+  employeeId String   @db.Uuid
+  raterId    String   @db.Uuid
+  stars      Int      @db.SmallInt
+  /// Private manager feedback. Never exposed to employees.
+  feedback   String?
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+
+  task      Task                 @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  employee  User                 @relation("RatingEmployee", fields: [employeeId], references: [id], onDelete: Restrict)
+  rater     User                 @relation("RatingRater", fields: [raterId], references: [id], onDelete: Restrict)
+  revisions TaskRatingRevision[]
+
+  @@index([employeeId])
+}
+
+/// Audit trail for rating creation and edits (kept separate from TaskHistory so it is never
+/// exposed through the employee-visible task history).
+model TaskRatingRevision {
+  id               String   @id @default(uuid()) @db.Uuid
+  ratingId         String   @db.Uuid
+  changedById      String   @db.Uuid
+  previousStars    Int?     @db.SmallInt
+  newStars         Int      @db.SmallInt
+  previousFeedback String?
+  newFeedback      String?
+  createdAt        DateTime @default(now()) @db.Timestamptz(3)
+
+  rating    TaskRating @relation(fields: [ratingId], references: [id], onDelete: Cascade)
+  changedBy User       @relation(fields: [changedById], references: [id], onDelete: Restrict)
+
+  @@index([ratingId, createdAt])
+}
+
+model TaskHistory {
+  id        String            @id @default(uuid()) @db.Uuid
+  taskId    String            @db.Uuid
+  actorId   String?           @db.Uuid
+  action    TaskHistoryAction
+  metadata  Json              @default("{}")
+  createdAt DateTime          @default(now()) @db.Timestamptz(3)
+
+  task  Task  @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([taskId, createdAt])
+}
+
+/// Persistent in-app notification. (userId, dedupeKey) is unique so redelivered events are idempotent.
+model Notification {
+  id        String           @id @default(uuid()) @db.Uuid
+  userId    String           @db.Uuid
+  type      NotificationType
+  title     String
+  body      String
+  taskId    String?          @db.Uuid
+  projectId String?          @db.Uuid
+  dedupeKey String
+  data      Json             @default("{}")
+  readAt    DateTime?        @db.Timestamptz(3)
+  pushedAt  DateTime?        @db.Timestamptz(3)
+  createdAt DateTime         @default(now()) @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, dedupeKey])
+  @@index([userId, readAt, createdAt])
+}
+
+/// One row per app install. A user may have several devices.
+model DeviceInstallation {
+  id            String         @id @default(uuid()) @db.Uuid
+  userId        String         @db.Uuid
+  expoPushToken String         @unique
+  platform      DevicePlatform
+  deviceName    String?
+  locale        String         @default("en")
+  lastSeenAt    DateTime       @default(now()) @db.Timestamptz(3)
+  /// Set when Expo/APNs/FCM report the token as invalid; disabled tokens are never used.
+  disabledAt    DateTime?      @db.Timestamptz(3)
+  createdAt     DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime       @updatedAt @db.Timestamptz(3)
+
+  user    User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tickets PushTicket[]
+
+  @@index([userId, disabledAt])
+}
+
+/// Expo push ticket awaiting a delivery receipt check (used to detect invalid tokens).
+model PushTicket {
+  id                   String    @id @default(uuid()) @db.Uuid
+  ticketId             String    @unique
+  deviceInstallationId String    @db.Uuid
+  notificationId       String?   @db.Uuid
+  checkedAt            DateTime? @db.Timestamptz(3)
+  createdAt            DateTime  @default(now()) @db.Timestamptz(3)
+
+  device DeviceInstallation @relation(fields: [deviceInstallationId], references: [id], onDelete: Cascade)
+
+  @@index([checkedAt, createdAt])
+}
+
+/// Transactional outbox. Written in the same DB transaction as the business change and
+/// relayed to SQS by the worker.
+model OutboxEvent {
+  id          String       @id @default(uuid()) @db.Uuid
+  type        String
+  aggregateId String       @db.Uuid
+  payload     Json
+  dedupeKey   String       @unique
+  status      OutboxStatus @default(PENDING)
+  attempts    Int          @default(0)
+  availableAt DateTime     @default(now()) @db.Timestamptz(3)
+  publishedAt DateTime?    @db.Timestamptz(3)
+  lastError   String?
+  createdAt   DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime     @updatedAt @db.Timestamptz(3)
+
+  @@index([status, availableAt])
+}
+
+/// Local-development replacement for EventBridge Scheduler one-time schedules.
+model ScheduledEvent {
+  id        String    @id @default(uuid()) @db.Uuid
+  name      String    @unique
+  runAt     DateTime  @db.Timestamptz(3)
+  payload   Json
+  firedAt   DateTime? @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([firedAt, runAt])
+}
