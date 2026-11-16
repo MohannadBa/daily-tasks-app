@@ -31,7 +31,7 @@ export class ProjectsController {
   }
 
   @Post()
-  @Roles(UserRole.COMPANY_ADMIN)
+  @Roles(UserRole.ADMIN)
   @ApiZodBody(createProjectSchema)
   async create(@CurrentUser() user: AuthUser, @ZBody(createProjectSchema) body: z.infer<typeof createProjectSchema>) {
     const p = await this.prisma.project.create({ data: { companyId: user.companyId, name: body.name, description: body.description ?? null } });
@@ -39,7 +39,7 @@ export class ProjectsController {
   }
 
   @Patch(':id')
-  @Roles(UserRole.COMPANY_ADMIN)
+  @Roles(UserRole.ADMIN)
   @ApiZodBody(updateProjectSchema)
   async update(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string, @ZBody(updateProjectSchema) body: z.infer<typeof updateProjectSchema>) {
     await this.access.projectAccess(user, id);
@@ -66,7 +66,7 @@ export class ProjectsController {
   }
 
   @Post(':id/members')
-  @Roles(UserRole.COMPANY_ADMIN)
+  @Roles(UserRole.ADMIN)
   @ApiZodBody(addMemberSchema)
   async addMember(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string, @ZBody(addMemberSchema) body: z.infer<typeof addMemberSchema>) {
     await this.access.projectAccess(user, id);
@@ -89,7 +89,7 @@ export class ProjectsController {
    * Open tasks assigned to the removed employee stay in the project for a manager to reassign.
    */
   @Delete(':id/members/:userId')
-  @Roles(UserRole.COMPANY_ADMIN)
+  @Roles(UserRole.ADMIN)
   @HttpCode(204)
   async removeMember(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string, @Param('userId', ParseUUIDPipe) userId: string) {
     await this.access.projectAccess(user, id);
@@ -102,7 +102,7 @@ export class ProjectsController {
       this.prisma.project.findUniqueOrThrow({ where: { id } }),
       this.prisma.projectMembership.count({ where: { projectId: id, removedAt: null } }),
       this.prisma.task.count({
-        where: { projectId: id, status: { not: TaskStatus.COMPLETED }, ...(this.access.isAdmin(user) ? {} : this.access.taskScope(user)) },
+        where: { AND: [{ projectId: id, status: { not: TaskStatus.COMPLETED } }, this.access.taskScope(user)] },
       }),
       this.prisma.projectMembership.findFirst({ where: { projectId: id, userId: user.id, removedAt: null } }),
     ]);

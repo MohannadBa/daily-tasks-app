@@ -47,7 +47,11 @@ export const resetPasswordSchema = z.object({
 });
 
 /** Admin-initiated reset. In local auth mode the admin sets a temporary password. */
-export const adminResetPasswordSchema = z.object({ temporaryPassword: passwordSchema.optional() });
+export const adminResetPasswordSchema = z.object({
+  /** Legacy local-mode: admin-chosen temporary password. */
+  temporaryPassword: passwordSchema.optional(),
+  passwordDelivery: z.enum(['EMAIL', 'SHOW_ONCE']).optional(),
+});
 
 export const updateProfileSchema = z
   .object({
@@ -58,16 +62,45 @@ export const updateProfileSchema = z
 
 /* ---------------------------- Users ---------------------------- */
 
-export const roleSchema = z.enum(['COMPANY_ADMIN', 'PROJECT_MANAGER', 'EMPLOYEE']);
+export const roleSchema = z.enum(['ADMIN', 'PROJECT_MANAGER', 'EMPLOYEE']);
+
+/** EMAIL: Cognito generates and e-mails the temporary password. SHOW_ONCE: returned once in the response. */
+export const passwordDeliverySchema = z.enum(['EMAIL', 'SHOW_ONCE']);
+
+const departmentAssignment = z
+  .array(z.object({ departmentId: uuid, isPrimary: z.boolean().default(false) }))
+  .max(10)
+  .refine((d) => new Set(d.map((x) => x.departmentId)).size === d.length, 'Duplicate department')
+  .refine((d) => d.length === 0 || d.filter((x) => x.isPrimary).length === 1, 'Exactly one primary department is required');
 
 export const inviteUserSchema = z.object({
   email: z.string().trim().toLowerCase().email(),
   name: trimmed(1, 120),
   role: roleSchema,
   locale: z.enum(['en', 'ar']).default('ar'),
-  /** Local auth mode only. Cognito sends its own invitation e-mail. */
+  /** Legacy (local auth mode): admin-chosen temporary password. Never returned or logged. */
   temporaryPassword: passwordSchema.optional(),
+  passwordDelivery: passwordDeliverySchema.optional(),
+  departments: departmentAssignment.default([]),
+  projects: z.array(z.object({ projectId: uuid, role: z.enum(['MANAGER', 'EMPLOYEE']) })).max(50).default([]),
 });
+
+export const userDepartmentsSchema = z.object({ departments: departmentAssignment.refine((d) => d.length > 0, 'At least one department') });
+
+export const changePasswordSchema = z.object({ currentPassword: z.string().min(1).max(256), newPassword: passwordSchema });
+
+/* -------------------------- Departments ------------------------- */
+
+export const createDepartmentSchema = z.object({
+  code: z.string().trim().toUpperCase().regex(/^[A-Z][A-Z_]{1,39}$/, 'Code: 2-40 letters/underscores'),
+  nameAr: trimmed(1, 120),
+  nameEn: trimmed(1, 120),
+  sortOrder: z.number().int().min(0).max(10000).optional(),
+});
+export const updateDepartmentSchema = z
+  .object({ nameAr: trimmed(1, 120).optional(), nameEn: trimmed(1, 120).optional(), isActive: z.boolean().optional(), sortOrder: z.number().int().min(0).max(10000).optional() })
+  .refine((v) => Object.keys(v).length > 0, 'Nothing to update');
+export const assignableQuerySchema = z.object({ projectId: uuid });
 export type InviteUserInput = z.input<typeof inviteUserSchema>;
 
 export const updateUserSchema = z
@@ -101,12 +134,18 @@ export const addMemberSchema = z.object({
 
 /* ----------------------------- Tasks ---------------------------- */
 
+export const prioritySchema = z.enum(['LOW', 'MEDIUM', 'HIGH', 'URGENT']);
+
 export const createTaskSchema = z.object({
+  departmentId: uuid,
   projectId: uuid,
   assigneeId: uuid,
   title: trimmed(1, 200),
   description: z.string().trim().max(10000).default(''),
+  priority: prioritySchema.default('MEDIUM'),
   deadline: isoDate,
+  /** ADMIN only: approver other than the creator (must be ADMIN or a manager of the project). */
+  approverId: uuid.optional(),
 });
 export type CreateTaskInput = z.input<typeof createTaskSchema>;
 
@@ -115,8 +154,11 @@ export const updateTaskSchema = z
     title: trimmed(1, 200).optional(),
     description: z.string().trim().max(10000).optional(),
     deadline: isoDate.optional(),
+    priority: prioritySchema.optional(),
+    departmentId: uuid.optional(),
   })
   .refine((v) => Object.keys(v).length > 0, 'Nothing to update');
+export const changeApproverSchema = z.object({ approverId: uuid });
 export type UpdateTaskInput = z.input<typeof updateTaskSchema>;
 
 export const reassignTaskSchema = z.object({ assigneeId: uuid });
@@ -150,9 +192,11 @@ export const taskListQuerySchema = z.object({
   projectId: uuid.optional(),
   assigneeId: uuid.optional(),
   status: z.enum(['ASSIGNED', 'IN_PROGRESS', 'COMPLETED']).optional(),
-  view: z.enum(['all', 'active', 'completed', 'overdue', 'awaiting_rating']).default('all'),
+  view: z.enum(['all', 'active', 'completed', 'overdue', 'awaiting_rating', 'pending_review', 'to_review', 'rejected']).default('all'),
   /** Sort order; default depends on the view (deadline ascending, or latest completion). */
   sort: z.enum(['deadline', '-deadline', '-created', '-updated', 'title']).optional(),
+  departmentId: uuid.optional(),
+  priority: prioritySchema.optional(),
   q: z.string().trim().max(200).optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(25),
@@ -249,3 +293,142 @@ export const updateCompanySettingsSchema = z
   .refine((v) => Object.keys(v).length > 0, 'Nothing to update');
 
 export { z };
+
+
+/* -------------------------- Workflow ---------------------------- */
+
+const reason = z.string().trim().min(1, 'A reason is required').max(2000);
+
+/** Completion submission: mandatory non-empty comment, optional attachments. */
+export const submitTaskSchema = z.object({
+  comment: z.string().trim().min(1, 'A completion comment is required').max(10000),
+  attachmentIds: z.array(uuid).max(ATTACHMENT_MAX_PER_REQUEST).default([]),
+});
+export const forwardSubmissionSchema = z.object({
+  note: z.string().trim().max(2000).optional(),
+  attachmentIds: z.array(uuid).max(ATTACHMENT_MAX_PER_REQUEST).default([]),
+});
+export const decisionReasonSchema = z.object({ reason });
+export const approveSubmissionSchema = z.object({
+  note: z.string().trim().max(2000).optional(),
+  /** Required when an ADMIN decides instead of the approver (break-glass). */
+  adminReason: z.string().trim().max(2000).optional(),
+});
+export const rejectSubmissionSchema = z.object({ reason, adminReason: z.string().trim().max(2000).optional() });
+
+export const transferRequestSchema = z.object({ toUserId: uuid, reason });
+export const transferResponseSchema = z.object({ note: z.string().trim().max(2000).optional() });
+export const transferDeclineSchema = z.object({ reason });
+
+export const extensionRequestSchema = z
+  .object({
+    requestedMinutes: z.number().int().min(15).max(43200).optional(),
+    requestedDeadline: isoDate.optional(),
+    reason,
+  })
+  .refine((v) => (v.requestedMinutes === undefined) !== (v.requestedDeadline === undefined), 'Provide requestedMinutes or requestedDeadline');
+export const extensionDecisionSchema = z
+  .object({
+    decision: z.enum(['APPROVE', 'PARTIAL', 'REJECT']),
+    grantedMinutes: z.number().int().min(1).max(43200).optional(),
+    note: z.string().trim().max(2000).optional(),
+  })
+  .refine((v) => v.decision !== 'PARTIAL' || v.grantedMinutes !== undefined, 'grantedMinutes is required for a partial approval')
+  .refine((v) => v.decision !== 'REJECT' || (v.note?.length ?? 0) > 0, 'A reason (note) is required to reject');
+
+/* -------------------------- Documents --------------------------- */
+
+export const documentUploadSchema = z
+  .object({
+    title: trimmed(1, 200),
+    description: z.string().trim().max(4000).optional().nullable(),
+    categoryId: uuid,
+    visibility: z.enum(['PROJECT_MEMBERS', 'MANAGERS_ONLY']).default('PROJECT_MEMBERS'),
+    fileName: trimmed(1, 255).refine((n) => !n.includes('/') && !n.includes('\\') && !n.includes('\0'), 'Invalid file name'),
+    contentType: z.string().trim().toLowerCase(),
+    sizeBytes: z.number().int().positive().max(ATTACHMENT_MAX_BYTES, `Files must be at most ${ATTACHMENT_MAX_BYTES / 1024 / 1024} MB`),
+  })
+  .superRefine((v, ctx) => {
+    const allowedExt = ALLOWED_ATTACHMENT_TYPES[v.contentType];
+    if (!allowedExt) return ctx.addIssue({ code: 'custom', path: ['contentType'], message: 'File type is not allowed' });
+    if (!allowedExt.includes(fileExtension(v.fileName))) ctx.addIssue({ code: 'custom', path: ['fileName'], message: 'File extension does not match the file type' });
+  });
+export const documentUpdateSchema = z
+  .object({
+    title: trimmed(1, 200).optional(),
+    description: z.string().trim().max(4000).optional().nullable(),
+    categoryId: uuid.optional(),
+    visibility: z.enum(['PROJECT_MEMBERS', 'MANAGERS_ONLY']).optional(),
+  })
+  .refine((v) => Object.keys(v).length > 0, 'Nothing to update');
+export const documentListQuerySchema = z.object({
+  q: z.string().trim().max(200).optional(),
+  categoryId: uuid.optional(),
+  source: z.enum(['TASK_SUBMISSION', 'MANUAL']).optional(),
+  departmentId: uuid.optional(),
+  taskId: uuid.optional(),
+  uploadedById: uuid.optional(),
+  from: isoDate.optional(),
+  to: isoDate.optional(),
+  sort: z.enum(['-created', 'created', 'title']).default('-created'),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(25),
+});
+
+/* ------------------------ Personal tasks ------------------------ */
+
+export const personalTaskCreateSchema = z.object({
+  title: trimmed(1, 200),
+  notes: z.string().trim().max(5000).optional().nullable(),
+  dueAt: isoDate.optional().nullable(),
+  priority: prioritySchema.default('MEDIUM'),
+});
+export const personalTaskUpdateSchema = z
+  .object({
+    title: trimmed(1, 200).optional(),
+    notes: z.string().trim().max(5000).optional().nullable(),
+    dueAt: isoDate.optional().nullable(),
+    priority: prioritySchema.optional(),
+  })
+  .refine((v) => Object.keys(v).length > 0, 'Nothing to update');
+export const personalTaskListQuerySchema = z.object({
+  status: z.enum(['OPEN', 'DONE']).optional(),
+  q: z.string().trim().max(200).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(50),
+});
+
+/* --------------------------- Reports ---------------------------- */
+
+export const reportRequestSchema = z.union([
+  z.object({ type: z.literal('TASK'), taskId: uuid, locale: z.enum(['ar', 'en']).default('ar') }),
+  z
+    .object({
+      type: z.literal('EMPLOYEE'),
+      userId: uuid,
+      projectIds: z.array(uuid).max(50).optional(),
+      departmentId: uuid.optional(),
+      from: isoDate,
+      to: isoDate,
+      status: z.array(z.enum(['ASSIGNED', 'IN_PROGRESS', 'PENDING_REVIEW', 'COMPLETED'])).max(4).optional(),
+      priority: z.array(prioritySchema).max(4).optional(),
+      timeliness: z.enum(['ALL', 'ON_TIME', 'LATE']).default('ALL'),
+      locale: z.enum(['ar', 'en']).default('ar'),
+    })
+    .refine((v) => v.to.getTime() > v.from.getTime(), 'to must be after from')
+    .refine((v) => v.to.getTime() - v.from.getTime() <= 366 * 24 * 3600_000, 'Range is limited to 366 days'),
+  z
+    .object({
+      type: z.literal('PROJECTS'),
+      projectIds: z.array(uuid).min(1).max(50),
+      departmentId: uuid.optional(),
+      from: isoDate,
+      to: isoDate,
+      status: z.array(z.enum(['ASSIGNED', 'IN_PROGRESS', 'PENDING_REVIEW', 'COMPLETED'])).max(4).optional(),
+      priority: z.array(prioritySchema).max(4).optional(),
+      timeliness: z.enum(['ALL', 'ON_TIME', 'LATE']).default('ALL'),
+      locale: z.enum(['ar', 'en']).default('ar'),
+    })
+    .refine((v) => v.to.getTime() > v.from.getTime(), 'to must be after from')
+    .refine((v) => v.to.getTime() - v.from.getTime() <= 366 * 24 * 3600_000, 'Range is limited to 366 days'),
+]);

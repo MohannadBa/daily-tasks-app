@@ -1,4 +1,4 @@
-import { api, createTestApp, inHours, seedWorld, type TestContext } from './helpers';
+import { api, backdateCycle, createTestApp, inHours, joinDepartment, seedWorld, submitAndApprove, type TestContext } from './helpers';
 
 /**
  * End-to-end API tests against a real Postgres database.
@@ -18,15 +18,14 @@ describe('Tasks, ratings and authorization (API)', () => {
   });
 
   async function createTask(managerId = w.managerA.id, assigneeId = w.emp1.id, projectId = w.projectA.id, title = 'Install lights') {
-    const res = await api(ctx, managerId).post('/tasks', { projectId, assigneeId, title, description: 'desc', deadline: inHours(48) });
+    const res = await api(ctx, managerId).post('/tasks', { projectId, departmentId: w.dept.id, assigneeId, title, description: 'desc', deadline: inHours(48) });
     expect(res.status).toBe(201);
     return res.body as { id: string; status: string };
   }
 
+  /** Submission by the employee + approval by the task approver (the only path to COMPLETED). */
   async function completeTask(taskId: string, userId = w.emp1.id) {
-    const res = await api(ctx, userId).post(`/tasks/${taskId}/complete`, { comment: 'All done' });
-    expect(res.status).toBe(200);
-    return res.body;
+    return submitAndApprove(ctx, taskId, userId);
   }
 
   describe('authentication', () => {
@@ -54,13 +53,20 @@ describe('Tasks, ratings and authorization (API)', () => {
       expect(history.map((h) => h.action)).toEqual(['CREATED']);
     });
 
-    it('rejects assigning to someone who is not an employee of the project', async () => {
-      const res = await api(ctx, w.managerA.id).post('/tasks', { projectId: w.projectA.id, assigneeId: w.emp3.id, title: 'x', deadline: inHours(5) });
+    it('rejects assigning to someone who is not an employee of the project or department', async () => {
+      const outside = await ctx.prisma.user.create({ data: { companyId: w.company.id, email: `nodept-${Date.now()}@t.local`, name: 'NoDept', role: 'EMPLOYEE' } });
+      await ctx.prisma.projectMembership.create({ data: { projectId: w.projectA.id, userId: outside.id, role: 'EMPLOYEE' } });
+      const wrongDept = await api(ctx, w.managerA.id).post('/tasks', { projectId: w.projectA.id, departmentId: w.dept.id, assigneeId: outside.id, title: 'x', deadline: inHours(5) });
+      expect(wrongDept.status).toBe(400);
+      expect(wrongDept.body.code).toBe('ASSIGNEE_NOT_ELIGIBLE');
+      const noDept = await api(ctx, w.managerA.id).post('/tasks', { projectId: w.projectA.id, assigneeId: w.emp1.id, title: 'x', deadline: inHours(5) });
+      expect(noDept.status).toBe(400);
+      const res = await api(ctx, w.managerA.id).post('/tasks', { projectId: w.projectA.id, departmentId: w.dept.id, assigneeId: w.emp3.id, title: 'x', deadline: inHours(5) });
       expect(res.status).toBe(403);
     });
 
     it('rejects past deadlines', async () => {
-      const res = await api(ctx, w.managerA.id).post('/tasks', { projectId: w.projectA.id, assigneeId: w.emp1.id, title: 'x', deadline: inHours(-5) });
+      const res = await api(ctx, w.managerA.id).post('/tasks', { projectId: w.projectA.id, departmentId: w.dept.id, assigneeId: w.emp1.id, title: 'x', deadline: inHours(-5) });
       expect(res.status).toBe(400);
     });
 
@@ -74,9 +80,14 @@ describe('Tasks, ratings and authorization (API)', () => {
       expect(fresh.status).toBe('ASSIGNED');
     });
 
-    it('completes immediately, records on-time completion, and cannot complete twice', async () => {
+    it('legacy /complete submits for review; approval completes, records on-time completion; cannot complete twice', async () => {
       const t = await createTask();
-      const done = await completeTask(t.id);
+      const submitted = await api(ctx, w.emp1.id).post(`/tasks/${t.id}/complete`, { comment: 'All done' });
+      expect(submitted.status).toBe(200);
+      expect(submitted.body.status).toBe('PENDING_REVIEW');
+      expect((await api(ctx, w.emp1.id).post(`/tasks/${t.id}/complete`, { comment: 'again' })).status).toBe(409);
+      await api(ctx, w.managerA.id).post(`/submissions/${submitted.body.pendingSubmission.id}/approve`, {}).expect(200);
+      const done = (await api(ctx, w.emp1.id).get(`/tasks/${t.id}`)).body;
       expect(done.status).toBe('COMPLETED');
       expect(done.completedLate).toBe(false);
       expect(done.isOverdue).toBe(false);
@@ -88,9 +99,9 @@ describe('Tasks, ratings and authorization (API)', () => {
       expect(comments.body[0].isCompletionNote).toBe(true);
     });
 
-    it('retains late-completion information', async () => {
+    it('retains late-completion information (accountable time over budget)', async () => {
       const t = await createTask();
-      await ctx.prisma.task.update({ where: { id: t.id }, data: { deadline: new Date(Date.now() - 3600_000) } });
+      await backdateCycle(ctx.prisma, t.id, 30, 24);
       const done = await completeTask(t.id);
       expect(done.completedLate).toBe(true);
     });
@@ -116,6 +127,8 @@ describe('Tasks, ratings and authorization (API)', () => {
       expect(reopened.metadata.reason).toBe('Missing photos');
       expect(reopened.metadata.previousCompletedLate).toBe(false);
       expect(await ctx.prisma.taskComment.count({ where: { taskId: t.id } })).toBe(1); // preserved
+      expect(res.body.currentCycle).toBe(2);
+      expect(await ctx.prisma.taskSubmission.count({ where: { taskId: t.id, status: 'APPROVED' } })).toBe(1); // preserved
     });
 
     it('12. deadline change bumps the schedule version and enqueues a new schedule sync', async () => {
@@ -158,7 +171,7 @@ describe('Tasks, ratings and authorization (API)', () => {
 
     it('employees cannot list project members or create tasks', async () => {
       expect((await api(ctx, w.emp1.id).get(`/projects/${w.projectA.id}/members`)).status).toBe(403);
-      const res = await api(ctx, w.emp1.id).post('/tasks', { projectId: w.projectA.id, assigneeId: w.emp2.id, title: 'x', deadline: inHours(5) });
+      const res = await api(ctx, w.emp1.id).post('/tasks', { projectId: w.projectA.id, departmentId: w.dept.id, assigneeId: w.emp2.id, title: 'x', deadline: inHours(5) });
       expect(res.status).toBe(403);
     });
 
@@ -168,7 +181,7 @@ describe('Tasks, ratings and authorization (API)', () => {
       const tB = await createTask(w.managerB.id, w.emp3.id, w.projectB.id);
       expect((await api(ctx, w.managerA.id).get(`/tasks/${tB.id}`)).status).toBe(404);
       expect((await api(ctx, w.managerA.id).patch(`/tasks/${tB.id}`, { title: 'hijack' })).status).toBe(404);
-      const create = await api(ctx, w.managerA.id).post('/tasks', { projectId: w.projectB.id, assigneeId: w.emp3.id, title: 'x', deadline: inHours(5) });
+      const create = await api(ctx, w.managerA.id).post('/tasks', { projectId: w.projectB.id, departmentId: w.dept.id, assigneeId: w.emp3.id, title: 'x', deadline: inHours(5) });
       expect(create.status).toBe(404);
     });
 
@@ -177,14 +190,15 @@ describe('Tasks, ratings and authorization (API)', () => {
       expect((await api(ctx, w.managerA.id).post(`/tasks/${t.id}/complete`, { comment: 'x' })).status).toBe(403);
     });
 
-    it('admin sees all company tasks; non-admins cannot manage users', async () => {
+    it('admin does not see tasks managed by others; non-admins cannot manage users', async () => {
       const tB = await createTask(w.managerB.id, w.emp3.id, w.projectB.id);
-      expect((await api(ctx, w.admin.id).get(`/tasks/${tB.id}`)).status).toBe(200);
+      expect((await api(ctx, w.admin.id).get(`/tasks/${tB.id}`)).status).toBe(404);
       expect((await api(ctx, w.managerA.id).post('/users', { email: 'x@y.z', name: 'x', role: 'EMPLOYEE', temporaryPassword: 'Abcdefg1' })).status).toBe(403);
     });
 
     it('15. removing a project membership prevents future access', async () => {
       const extra = await ctx.prisma.user.create({ data: { companyId: w.company.id, email: `extra-${Date.now()}@t.local`, name: 'Extra', role: 'EMPLOYEE' } });
+      await joinDepartment(ctx.prisma, w.dept.id, extra.id);
       await api(ctx, w.admin.id).post(`/projects/${w.projectA.id}/members`, { userId: extra.id, role: 'EMPLOYEE' }).expect(201);
       const t = await createTask(w.managerA.id, extra.id);
       expect((await api(ctx, extra.id).get(`/tasks/${t.id}`)).status).toBe(200);
@@ -228,6 +242,7 @@ describe('Tasks, ratings and authorization (API)', () => {
 
       const done = await e.post(`/tasks/${t.id}/complete`, { comment: 'Photos attached', attachmentIds: [att.id] });
       expect(done.status).toBe(200);
+      expect(done.body.status).toBe('PENDING_REVIEW');
       const comments = await api(ctx, w.managerA.id).get(`/tasks/${t.id}/comments`);
       expect(comments.body[0].attachments).toHaveLength(1);
 
@@ -311,6 +326,7 @@ describe('Tasks, ratings and authorization (API)', () => {
     it('14. averages are computed from valid ratings of completed tasks only', async () => {
       const emp = await ctx.prisma.user.create({ data: { companyId: w.company.id, email: `avg-${Date.now()}@t.local`, name: 'Avg', role: 'EMPLOYEE' } });
       await ctx.prisma.projectMembership.create({ data: { projectId: w.projectA.id, userId: emp.id, role: 'EMPLOYEE' } });
+      await joinDepartment(ctx.prisma, w.dept.id, emp.id);
       const m = api(ctx, w.managerA.id);
       const stars = [5, 4, 2];
       const ids: string[] = [];
@@ -339,9 +355,10 @@ describe('Tasks, ratings and authorization (API)', () => {
       expect(perf.body.averageRating).toBeCloseTo(4.5, 2);
       expect(perf.body.ratedTaskCount).toBe(2);
 
-      // Admin sees the same numbers; awaiting-rating view includes the unrated one.
+      // The admin did not create or approve these tasks, so he sees none of their ratings.
       const adminPerf = await api(ctx, w.admin.id).get(`/performance/employees/${emp.id}`);
-      expect(adminPerf.body.averageRating).toBeCloseTo(4.5, 2);
+      expect(adminPerf.body.averageRating).toBeNull();
+      expect(adminPerf.body.ratings).toEqual([]);
       const awaiting = await m.get(`/tasks?view=awaiting_rating&assigneeId=${emp.id}`);
       expect(awaiting.body.items.map((i: { id: string }) => i.id)).toContain(unrated.id);
     });

@@ -14,7 +14,7 @@ import { RatingsService } from './ratings.service';
  */
 @ApiTags('ratings')
 @ApiBearerAuth()
-@Roles(UserRole.COMPANY_ADMIN, UserRole.PROJECT_MANAGER)
+@Roles(UserRole.ADMIN, UserRole.PROJECT_MANAGER)
 @Controller()
 export class RatingsController {
   constructor(private readonly ratings: RatingsService) {}

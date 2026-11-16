@@ -5,7 +5,7 @@ import { API, apiToken, signIn, USERS } from './helpers';
  * Critical business workflow across two real browsers (manager + employee), including live
  * WebSocket updates and rating privacy enforced by the backend.
  */
-test('manager assigns → employee sees it live, replies with a file, completes → manager rates; employee can never see the rating', async ({ browser }) => {
+test('manager assigns (department + priority) → employee sees it live, replies with a file, submits → manager approves and rates; employee can never see the rating', async ({ browser }) => {
   test.setTimeout(150_000);
   const title = `E2E ${Date.now()}`;
   const mgr = await signIn(browser, USERS.manager, 'en');
@@ -15,13 +15,18 @@ test('manager assigns → employee sees it live, replies with a file, completes 
   await emp.page.goto('/');
   await expect(emp.page.getByRole('status').filter({ hasText: /^Live$/ }).first()).toBeVisible({ timeout: 15_000 });
   const badge = emp.page.locator('aside a[href="/notifications"] span.rounded-full');
-  const before = Number((await badge.textContent().catch(() => '0')) || '0');
+  // The badge caps at "99+", so the authoritative count comes from the API (same session via the BFF).
+  const unread = () => emp.page.evaluate(async () => (await (await fetch('/bff/notifications/unread-count')).json()).count as number);
+  const before = await unread();
 
   // Manager creates the task through the UI.
   await mgr.page.goto('/tasks/new');
   await mgr.page.waitForLoadState('networkidle'); // hydrated, projects loaded
-  await mgr.page.getByLabel('Project').selectOption({ label: 'Riyadh Office Tower' });
-  const assignee = mgr.page.getByLabel('Assign to');
+  await mgr.page.getByRole('combobox', { name: 'Project', exact: true }).selectOption({ label: 'Riyadh Office Tower' });
+  // Assignees are limited to employees of the project AND the chosen department.
+  await mgr.page.getByRole('combobox', { name: 'Department', exact: true }).selectOption({ label: 'Project Management' });
+  await mgr.page.getByRole('combobox', { name: 'Priority', exact: true }).selectOption({ label: 'High' });
+  const assignee = mgr.page.getByRole('combobox', { name: 'Assign to', exact: true });
   await expect(assignee).toBeEnabled();
   await expect(assignee.locator('option', { hasText: 'Omar Employee' })).toHaveCount(1);
   await assignee.selectOption({ label: 'Omar Employee' });
@@ -37,7 +42,8 @@ test('manager assigns → employee sees it live, replies with a file, completes 
 
   // Live update on the employee's open page — no reload: toast + unread badge.
   await expect(emp.page.getByText('A new task was assigned to you')).toBeVisible({ timeout: 20_000 });
-  await expect.poll(async () => Number((await badge.textContent()) || '0'), { timeout: 15_000 }).toBeGreaterThan(before);
+  await expect.poll(unread, { timeout: 15_000 }).toBeGreaterThan(before);
+  await expect(badge).toBeVisible(); // live badge updated without a reload
 
   // Employee replies with an attachment (pre-signed S3 upload with progress), then completes.
   await emp.page.goto(`/tasks/${taskId}`);
@@ -47,16 +53,22 @@ test('manager assigns → employee sees it live, replies with a file, completes 
   await expect(emp.page.getByText('Reply sent')).toBeVisible();
   await expect(emp.page.getByRole('button', { name: /site\.png/ })).toBeVisible();
 
-  await emp.page.getByRole('tab', { name: 'Complete task' }).click();
-  const complete = emp.page.getByRole('button', { name: 'Mark as completed' });
+  await emp.page.getByRole('tab', { name: 'Submit completion' }).click();
+  const complete = emp.page.getByRole('button', { name: 'Submit for approval' });
   await expect(complete).toBeDisabled(); // a non-empty completion comment is required
   await emp.page.getByPlaceholder('Describe the completed work (required)…').fill('All done, area is clean');
   await complete.click();
-  await expect(emp.page.getByText('Task completed', { exact: true }).first()).toBeVisible();
+  await expect(emp.page.getByText('Submitted for approval', { exact: true }).first()).toBeVisible();
   await expect(emp.page.getByText('Completion report')).toBeVisible();
+  await expect(emp.page.getByText('Pending approval').first()).toBeVisible();
+  await expect(emp.page.getByRole('button', { name: 'Approve' })).toHaveCount(0); // no self-approval
 
-  // Manager's open task page updates live, then the manager rates privately.
-  await expect(mgr.page.getByText('A task was completed')).toBeVisible({ timeout: 20_000 });
+  // Manager is told live, opens the task and approves (the only way to complete it).
+  await expect(mgr.page.getByText('Work was submitted for your review')).toBeVisible({ timeout: 20_000 });
+  await mgr.page.reload();
+  await mgr.page.getByRole('button', { name: 'Approve' }).click();
+  await expect(mgr.page.getByText('Task approved')).toBeVisible();
+  await expect(emp.page.getByText('Your work was approved')).toBeVisible({ timeout: 20_000 });
   await mgr.page.reload();
   await mgr.page.getByRole('radio', { name: '4 stars' }).click();
   await mgr.page.getByLabel('Private feedback (optional)').fill('Good, a bit late on photos');

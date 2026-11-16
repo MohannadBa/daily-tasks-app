@@ -12,7 +12,8 @@ export interface StoredObjectInfo {
 /** Abstract so tests can swap in an in-memory implementation. */
 export abstract class StorageService {
   abstract presignUpload(key: string, contentType: string, sizeBytes: number, ttlSeconds: number): Promise<{ url: string; headers: Record<string, string> }>;
-  abstract presignDownload(key: string, fileName: string, ttlSeconds: number): Promise<string>;
+  /** `inline` only for types that are safe to render in the browser (see INLINE_PREVIEW_TYPES). */
+  abstract presignDownload(key: string, fileName: string, ttlSeconds: number, inline?: boolean): Promise<string>;
   /** Returns null if the object does not exist. */
   abstract head(key: string): Promise<StoredObjectInfo | null>;
 }
@@ -49,12 +50,12 @@ export class S3StorageService extends StorageService {
     return { url, headers: { 'Content-Type': contentType } };
   }
 
-  async presignDownload(key: string, fileName: string, ttlSeconds: number) {
+  async presignDownload(key: string, fileName: string, ttlSeconds: number, inline = false) {
     const safe = fileName.replace(/["\\\r\n]/g, '_');
     const cmd = new GetObjectCommand({
       Bucket: this.bucket,
       Key: key,
-      ResponseContentDisposition: `attachment; filename="${safe.replace(/[^\x20-\x7e]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+      ResponseContentDisposition: `${inline ? 'inline' : 'attachment'}; filename="${safe.replace(/[^\x20-\x7e]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
     });
     return getSignedUrl(this.signer, cmd, { expiresIn: ttlSeconds });
   }

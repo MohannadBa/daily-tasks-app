@@ -4,8 +4,11 @@ import {
   AdminDisableUserCommand,
   AdminEnableUserCommand,
   AdminResetUserPasswordCommand,
+  AdminSetUserPasswordCommand,
+  AdminUserGlobalSignOutCommand,
   AuthFlowType,
   ChallengeNameType,
+  ChangePasswordCommand,
   CognitoIdentityProviderClient,
   ConfirmForgotPasswordCommand,
   ForgotPasswordCommand,
@@ -14,6 +17,7 @@ import {
   type AuthenticationResultType,
 } from '@aws-sdk/client-cognito-identity-provider';
 import bcrypt from 'bcryptjs';
+import { randomInt } from 'node:crypto';
 import type { ApiEnv } from '@dailytasks/config';
 import type { AuthTokens } from '@dailytasks/shared-types';
 import { API_ENV } from '../config/config.module';
@@ -54,6 +58,8 @@ export class IdentityService {
     if (this.env.AUTH_MODE === 'local') {
       const ok = await bcrypt.compare(password, user?.passwordHash ?? this.dummyHash);
       if (!user || !ok || !user.isActive) throw new UnauthorizedException('Invalid email or password');
+      // Temporary password: no tokens until a new password is chosen (same contract as Cognito).
+      if (user.mustChangePassword) return { status: 'NEW_PASSWORD_REQUIRED', session: this.tokens.issuePasswordChallenge(user.id), email: user.email };
       await this.prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
       return { status: 'OK', userId: user.id, tokens: this.tokens.issueLocalTokens(user.id) };
     }
@@ -79,7 +85,17 @@ export class IdentityService {
   }
 
   async completeNewPassword(email: string, session: string, newPassword: string): Promise<LoginResult> {
-    if (this.env.AUTH_MODE !== 'cognito') throw new BadRequestException('Not supported in local auth mode');
+    if (this.env.AUTH_MODE === 'local') {
+      const userId = this.tokens.verifyPasswordChallenge(session);
+      const user = await this.prisma.user.findUnique({ where: { id: userId } });
+      if (!user || !user.isActive || user.email !== email || !user.mustChangePassword) throw new UnauthorizedException('Invalid session');
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { passwordHash: await bcrypt.hash(newPassword, 10), mustChangePassword: false, passwordChangedAt: new Date(), lastLoginAt: new Date() },
+      });
+      await this.audit(user.companyId, user.id, 'PASSWORD_CHANGED', user.id, { firstLogin: true });
+      return { status: 'OK', userId: user.id, tokens: this.tokens.issueLocalTokens(user.id) };
+    }
     const user = await this.prisma.user.findUnique({ where: { email } });
     if (!user || !user.isActive) throw new UnauthorizedException('Invalid session');
     try {
@@ -91,7 +107,10 @@ export class IdentityService {
           ChallengeResponses: { USERNAME: email, NEW_PASSWORD: newPassword },
         }),
       );
-      return await this.finishCognitoLogin(user.id, res.AuthenticationResult);
+      const done = await this.finishCognitoLogin(user.id, res.AuthenticationResult);
+      await this.prisma.user.update({ where: { id: user.id }, data: { mustChangePassword: false, passwordChangedAt: new Date() } });
+      await this.audit(user.companyId, user.id, 'PASSWORD_CHANGED', user.id, { firstLogin: true });
+      return done;
     } catch (e) {
       this.logger.warn(`Cognito new-password challenge failed: ${(e as Error).name}`);
       throw new BadRequestException('Could not set new password');
@@ -151,24 +170,40 @@ export class IdentityService {
   }
 
   /**
-   * Administrator resets a user's password. Cognito: the user gets an e-mailed code and completes
-   * it on the "Forgot password" page. Local mode: the admin sets a temporary password.
+   * Administrator resets a user's password; the user must choose a new one at next sign-in.
+   *  - Cognito + EMAIL: Cognito e-mails a reset code (AdminResetUserPassword).
+   *  - Cognito + SHOW_ONCE: a generated temporary password (AdminSetUserPassword, Permanent=false).
+   *  - Local: admin-provided or generated temporary password, hashed; mustChangePassword = true.
+   * The plaintext is returned only for SHOW_ONCE (or never, when the admin chose it).
    */
-  async adminResetPassword(email: string, temporaryPassword?: string): Promise<{ passwordHash?: string; mode: 'email' | 'temporary' }> {
+  async adminResetPassword(email: string, delivery: 'EMAIL' | 'SHOW_ONCE' | undefined, temporaryPassword?: string): Promise<{ passwordHash?: string; mode: 'email' | 'temporary'; reveal?: string }> {
     if (this.env.AUTH_MODE === 'local') {
-      if (!temporaryPassword) throw new BadRequestException('temporaryPassword is required in local auth mode');
-      return { passwordHash: await bcrypt.hash(temporaryPassword, 10), mode: 'temporary' };
+      if (delivery === 'EMAIL') throw new BadRequestException('E-mail delivery is not available in local auth mode; use SHOW_ONCE');
+      const pwd = temporaryPassword ?? generateTemporaryPassword();
+      return { passwordHash: await bcrypt.hash(pwd, 10), mode: 'temporary', reveal: temporaryPassword ? undefined : pwd };
+    }
+    if (delivery === 'SHOW_ONCE' || temporaryPassword) {
+      const pwd = temporaryPassword ?? generateTemporaryPassword();
+      await this.cognito!.send(new AdminSetUserPasswordCommand({ UserPoolId: this.env.COGNITO_USER_POOL_ID!, Username: email, Password: pwd, Permanent: false }));
+      return { mode: 'temporary', reveal: temporaryPassword ? undefined : pwd };
     }
     await this.cognito!.send(new AdminResetUserPasswordCommand({ UserPoolId: this.env.COGNITO_USER_POOL_ID!, Username: email }));
     return { mode: 'email' };
   }
 
-  /** Provision a login for a newly invited user. */
-  async provisionUser(email: string, temporaryPassword?: string): Promise<{ passwordHash?: string }> {
+  /**
+   * Provision a login for a new user. Cognito EMAIL (default): Cognito generates and e-mails the
+   * temporary password — our system never sees it. SHOW_ONCE: we generate it, suppress the e-mail
+   * and return it exactly once. Local mode: hashed; returned once unless the admin chose it.
+   */
+  async provisionUser(email: string, delivery: 'EMAIL' | 'SHOW_ONCE' | undefined, temporaryPassword?: string): Promise<{ passwordHash?: string; reveal?: string }> {
     if (this.env.AUTH_MODE === 'local') {
-      if (!temporaryPassword) throw new BadRequestException('temporaryPassword is required in local auth mode');
-      return { passwordHash: await bcrypt.hash(temporaryPassword, 10) };
+      if (delivery === 'EMAIL') throw new BadRequestException('E-mail delivery is not available in local auth mode; use SHOW_ONCE');
+      const pwd = temporaryPassword ?? generateTemporaryPassword();
+      return { passwordHash: await bcrypt.hash(pwd, 10), reveal: temporaryPassword ? undefined : pwd };
     }
+    const showOnce = delivery === 'SHOW_ONCE' || !!temporaryPassword;
+    const pwd = showOnce ? (temporaryPassword ?? generateTemporaryPassword()) : undefined;
     await this.cognito!.send(
       new AdminCreateUserCommand({
         UserPoolId: this.env.COGNITO_USER_POOL_ID!,
@@ -177,10 +212,43 @@ export class IdentityService {
           { Name: 'email', Value: email },
           { Name: 'email_verified', Value: 'true' },
         ],
-        DesiredDeliveryMediums: ['EMAIL'],
+        ...(showOnce ? { TemporaryPassword: pwd, MessageAction: 'SUPPRESS' as const } : { DesiredDeliveryMediums: ['EMAIL' as const] }),
       }),
     );
-    return {};
+    return { reveal: showOnce && !temporaryPassword ? pwd : undefined };
+  }
+
+  /** Cognito e-mails the temporary password by default; local mode can only show it once. */
+  defaultDelivery(): 'EMAIL' | 'SHOW_ONCE' {
+    return this.env.AUTH_MODE === 'cognito' ? 'EMAIL' : 'SHOW_ONCE';
+  }
+
+  /** Authenticated password change (both modes). */
+  async changePassword(userId: string, accessToken: string, currentPassword: string, newPassword: string): Promise<void> {
+    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    if (this.env.AUTH_MODE === 'local') {
+      if (!(await bcrypt.compare(currentPassword, user.passwordHash ?? this.dummyHash))) throw new BadRequestException('Current password is incorrect');
+      await this.prisma.user.update({ where: { id: userId }, data: { passwordHash: await bcrypt.hash(newPassword, 10), mustChangePassword: false, passwordChangedAt: new Date() } });
+    } else {
+      try {
+        await this.cognito!.send(new ChangePasswordCommand({ AccessToken: accessToken, PreviousPassword: currentPassword, ProposedPassword: newPassword }));
+      } catch (e) {
+        this.logger.warn(`Cognito change-password failed: ${(e as Error).name}`);
+        throw new BadRequestException('Could not change the password');
+      }
+      await this.prisma.user.update({ where: { id: userId }, data: { mustChangePassword: false, passwordChangedAt: new Date() } });
+    }
+    await this.audit(user.companyId, userId, 'PASSWORD_CHANGED', userId, {});
+  }
+
+  /** Revokes all sessions (deactivation). Local refresh tokens are re-checked against isActive. */
+  async signOutEverywhere(email: string) {
+    if (this.env.AUTH_MODE !== 'cognito') return;
+    await this.cognito!.send(new AdminUserGlobalSignOutCommand({ UserPoolId: this.env.COGNITO_USER_POOL_ID!, Username: email }));
+  }
+
+  private audit(companyId: string, actorId: string | null, action: string, entityId: string, metadata: Record<string, unknown>) {
+    return this.prisma.auditLog.create({ data: { companyId, actorId, action, entityType: 'USER', entityId, metadata: metadata as object } });
   }
 
   async setUserEnabled(email: string, enabled: boolean) {
@@ -200,4 +268,22 @@ export class IdentityService {
       tokens: { accessToken: result.AccessToken, refreshToken: result.RefreshToken!, expiresIn: result.ExpiresIn ?? 3600 },
     };
   }
+}
+
+/**
+ * Cryptographically random temporary password satisfying the Cognito policy
+ * (≥ 8 chars, upper, lower, digit). 16 chars from an unambiguous alphabet.
+ */
+export function generateTemporaryPassword(): string {
+  const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const lower = 'abcdefghijkmnpqrstuvwxyz';
+  const digit = '23456789';
+  const all = upper + lower + digit;
+  const pick = (set: string) => set[randomInt(set.length)]!;
+  const chars = [pick(upper), pick(lower), pick(digit), ...Array.from({ length: 13 }, () => pick(all))];
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = randomInt(i + 1);
+    [chars[i], chars[j]] = [chars[j]!, chars[i]!];
+  }
+  return chars.join('');
 }

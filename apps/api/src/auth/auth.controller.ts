@@ -1,13 +1,13 @@
-import { Body, Controller, Get, HttpCode, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Patch, Post, Req } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { ProjectRole } from '@dailytasks/database';
 import type { CurrentUser as CurrentUserDto, LoginResponse } from '@dailytasks/shared-types';
-import { forgotPasswordSchema, loginSchema, newPasswordSchema, refreshSchema, resetPasswordSchema, updateProfileSchema } from '@dailytasks/validation';
+import { changePasswordSchema, forgotPasswordSchema, loginSchema, newPasswordSchema, refreshSchema, resetPasswordSchema, updateProfileSchema } from '@dailytasks/validation';
 import { ApiZodBody, ZodValidationPipe } from '../common/zod';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthUser } from './auth.types';
-import { CurrentUser, Public } from './decorators';
+import { AllowWhilePasswordChangeRequired, CurrentUser, Public } from './decorators';
 import { IdentityService, type LoginResult } from './identity.service';
 
 @ApiTags('auth')
@@ -66,9 +66,20 @@ export class AuthController {
   }
 
   @ApiBearerAuth()
+  @AllowWhilePasswordChangeRequired()
   @Get('auth/me')
   me(@CurrentUser() user: AuthUser) {
     return this.currentUser(user.id);
+  }
+
+  @ApiBearerAuth()
+  @AllowWhilePasswordChangeRequired()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('auth/change-password')
+  @HttpCode(204)
+  @ApiZodBody(changePasswordSchema)
+  async changePassword(@CurrentUser() user: AuthUser, @Req() req: { accessToken?: string }, @Body(new ZodValidationPipe(changePasswordSchema)) body: { currentPassword: string; newPassword: string }) {
+    await this.identity.changePassword(user.id, req.accessToken ?? '', body.currentPassword, body.newPassword);
   }
 
   @ApiBearerAuth()
@@ -88,7 +99,11 @@ export class AuthController {
   private async currentUser(userId: string): Promise<CurrentUserDto> {
     const u = await this.prisma.user.findUniqueOrThrow({
       where: { id: userId },
-      include: { company: true, memberships: { where: { removedAt: null }, select: { projectId: true, role: true } } },
+      include: {
+        company: true,
+        memberships: { where: { removedAt: null }, select: { projectId: true, role: true } },
+        departmentMemberships: { where: { removedAt: null }, include: { department: true } },
+      },
     });
     return {
       id: u.id,
@@ -97,6 +112,8 @@ export class AuthController {
       role: u.role,
       locale: u.locale === 'ar' ? 'ar' : 'en',
       companyId: u.companyId,
+      departments: u.departmentMemberships.map((m) => ({ id: m.department.id, nameAr: m.department.nameAr, nameEn: m.department.nameEn, isPrimary: m.isPrimary })),
+      mustChangePassword: u.mustChangePassword,
       companyName: u.company.name,
       managedProjectIds: u.memberships.filter((m) => m.role === ProjectRole.MANAGER).map((m) => m.projectId),
       employeeProjectIds: u.memberships.filter((m) => m.role === ProjectRole.EMPLOYEE).map((m) => m.projectId),

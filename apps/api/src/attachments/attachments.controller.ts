@@ -1,4 +1,4 @@
-import { Controller, Get, HttpCode, Module, Param, ParseUUIDPipe, Post } from '@nestjs/common';
+import { Controller, Get, HttpCode, Module, Param, ParseUUIDPipe, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { uploadRequestSchema, type z } from '@dailytasks/validation';
 import type { AuthUser } from '../auth/auth.types';
@@ -34,9 +34,10 @@ export class AttachmentsController {
     return this.attachments.confirm(user, id);
   }
 
+  /** `?preview=true` returns an inline URL for images/PDF (in-app preview); other types still download. */
   @Get('attachments/:id/download-url')
-  downloadUrl(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
-    return this.attachments.downloadUrl(user, id);
+  downloadUrl(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string, @Query('preview') preview?: string) {
+    return this.attachments.downloadUrl(user, id, preview === 'true');
   }
 }
 

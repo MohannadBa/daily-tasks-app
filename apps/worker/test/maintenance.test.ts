@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { PrismaClient } from '@dailytasks/database';
 import { cleanupAbandonedUploads, type ObjectStore } from '../src/attachments';
 import { publishRealtime } from '../src/notifier';
+import { taskFields } from './fixtures';
 
 const prisma = new PrismaClient();
 beforeAll(() => prisma.$connect());
@@ -12,7 +13,7 @@ describe('abandoned upload cleanup (retention)', () => {
     const company = await prisma.company.create({ data: { name: 'Retention' } });
     const user = await prisma.user.create({ data: { companyId: company.id, email: `r-${Date.now()}@t.local`, name: 'U', role: 'PROJECT_MANAGER' } });
     const project = await prisma.project.create({ data: { companyId: company.id, name: 'P' } });
-    const task = await prisma.task.create({ data: { projectId: project.id, assigneeId: user.id, createdById: user.id, title: 'T', deadline: new Date(Date.now() + 86400_000) } });
+    const task = await prisma.task.create({ data: { projectId: project.id, assigneeId: user.id, createdById: user.id, title: 'T', deadline: new Date(Date.now() + 86400_000), ...(await taskFields(prisma, company.id, user.id, new Date(Date.now() + 86400_000))) } });
     const mk = (status: 'PENDING' | 'UPLOADED', ageHours: number) =>
       prisma.taskAttachment.create({
         data: {
@@ -24,7 +25,7 @@ describe('abandoned upload cleanup (retention)', () => {
     const fresh = await mk('PENDING', 2);
     const confirmed = await mk('UPLOADED', 100);
     const deleted: string[] = [];
-    const store: ObjectStore = { delete: async (k) => void deleted.push(k) };
+    const store: ObjectStore = { delete: async (k) => void deleted.push(k), put: async () => {} };
 
     expect(await cleanupAbandonedUploads(prisma, store)).toBeGreaterThanOrEqual(1);
     expect(deleted).toContain(stale.storageKey);
@@ -39,11 +40,11 @@ describe('abandoned upload cleanup (retention)', () => {
     const company = await prisma.company.create({ data: { name: 'Retention2' } });
     const user = await prisma.user.create({ data: { companyId: company.id, email: `r2-${Date.now()}@t.local`, name: 'U', role: 'PROJECT_MANAGER' } });
     const project = await prisma.project.create({ data: { companyId: company.id, name: 'P' } });
-    const task = await prisma.task.create({ data: { projectId: project.id, assigneeId: user.id, createdById: user.id, title: 'T', deadline: new Date(Date.now() + 86400_000) } });
+    const task = await prisma.task.create({ data: { projectId: project.id, assigneeId: user.id, createdById: user.id, title: 'T', deadline: new Date(Date.now() + 86400_000), ...(await taskFields(prisma, company.id, user.id, new Date(Date.now() + 86400_000))) } });
     const a = await prisma.taskAttachment.create({
       data: { taskId: task.id, uploadedById: user.id, fileName: 'b.pdf', contentType: 'application/pdf', sizeBytes: 10, storageKey: `t/${Math.random()}`, createdAt: new Date(Date.now() - 48 * 3600_000) },
     });
-    await cleanupAbandonedUploads(prisma, { delete: async () => { throw new Error('s3 down'); } });
+    await cleanupAbandonedUploads(prisma, { delete: async () => { throw new Error('s3 down'); }, put: async () => {} });
     expect(await prisma.taskAttachment.findUnique({ where: { id: a.id } })).not.toBeNull();
   });
 });

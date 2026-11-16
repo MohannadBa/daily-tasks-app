@@ -1,9 +1,10 @@
 'use client';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Trash2 } from 'lucide-react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
-import { useState } from 'react';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
+import { Suspense, useState, type ReactNode } from 'react';
+import { DocumentsCenter } from '@/components/documents-center';
 import { useMe } from '@/components/providers';
 import { Stars } from '@/components/stars';
 import { TaskTable } from '@/components/task-table';
@@ -12,16 +13,54 @@ import { Badge, Button, Card, ErrorBox, Field, Input, LinkButton, PageHeader, Se
 import { api } from '@/lib/api';
 import { useT } from '@/lib/i18n';
 
+type Section = 'overview' | 'tasks' | 'employees' | 'documents';
+
+function Stat({ label, value, href }: { label: string; value: ReactNode; href?: string }) {
+  const body = (
+    <>
+      <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
+      <p className="mt-2 text-2xl font-semibold tabular-nums text-slate-900">{value}</p>
+    </>
+  );
+  return href ? (
+    <Link href={href} className="block rounded-[var(--radius-card)] border border-slate-200 bg-white p-4 transition-colors hover:border-brand-300">
+      {body}
+    </Link>
+  ) : (
+    <div className="rounded-[var(--radius-card)] border border-slate-200 bg-white p-4">{body}</div>
+  );
+}
+
 export default function ProjectDetailPage() {
+  return (
+    <Suspense fallback={<Spinner />}>
+      <ProjectDetail />
+    </Suspense>
+  );
+}
+
+function ProjectDetail() {
   const { id } = useParams<{ id: string }>();
+  const router = useRouter();
+  const params = useSearchParams();
+  const section = ((params.get('tab') as Section) || 'overview') satisfies Section;
+  const setSection = (s: Section) => router.replace(s === 'overview' ? `/projects/${id}` : `/projects/${id}?tab=${s}`);
   const me = useMe();
   const qc = useQueryClient();
   const { t } = useT();
-  const isAdmin = me.role === 'COMPANY_ADMIN';
+  const isAdmin = me.role === 'ADMIN';
   const project = useQuery({ queryKey: ['project', id], queryFn: () => api.projects.get(id) });
   const canManage = isAdmin || project.data?.myRole === 'MANAGER';
-  const [view, setView] = useState<'active' | 'overdue' | 'completed' | 'awaiting_rating'>('active');
-  const tasks = useQuery({ queryKey: ['tasks', view, id], queryFn: () => api.tasks.list({ projectId: id, view, pageSize: 100 }) });
+  const [view, setView] = useState<'active' | 'pending_review' | 'overdue' | 'completed' | 'awaiting_rating'>('active');
+  const tasks = useQuery({ queryKey: ['tasks', view, id], queryFn: () => api.tasks.list({ projectId: id, view, pageSize: 100 }), enabled: section === 'tasks' });
+  // Overview counters come from the API's own filters (ledger-based overdue), pageSize 1 = count only.
+  const [cActive, cPending, cOverdue, cDone] = useQueries({
+    queries: (['active', 'pending_review', 'overdue', 'completed'] as const).map((v) => ({
+      queryKey: ['tasks', 'count', v, id],
+      queryFn: () => api.tasks.list({ projectId: id, view: v, pageSize: 1 }),
+      enabled: section === 'overview',
+    })),
+  });
   const members = useQuery({ queryKey: ['members', id], queryFn: () => api.projects.members(id), enabled: canManage });
   const perf = useQuery({ queryKey: ['performance', 'project', id], queryFn: () => api.performance.employees(id), enabled: canManage });
   const users = useQuery({ queryKey: ['users'], queryFn: () => api.users.list(), enabled: isAdmin });
@@ -98,13 +137,38 @@ export default function ProjectDetailPage() {
           </form>
         </Card>
       )}
-      <div className="grid gap-4 sm:gap-6 lg:grid-cols-3">
-        <div className="min-w-0 lg:col-span-2">
+      <Tabs
+        value={section}
+        onChange={setSection}
+        items={[
+          { value: 'overview', label: t('Overview') },
+          { value: 'tasks', label: t('Tasks') },
+          ...(canManage ? [{ value: 'employees' as const, label: t('Employees') }] : []),
+          { value: 'documents', label: t('Documents') },
+        ]}
+      />
+      {section === 'overview' && (
+        <div className="dt-fade-in space-y-4 sm:space-y-6">
+          <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+            <Stat label={t('Active tasks')} value={cActive.data?.total ?? '—'} href={`/tasks?projectId=${id}&view=active`} />
+            <Stat label={t('Pending approval')} value={cPending.data?.total ?? '—'} href={`/tasks?projectId=${id}&view=pending_review`} />
+            <Stat label={t('Overdue')} value={cOverdue.data?.total ?? '—'} href={`/tasks?projectId=${id}&view=overdue`} />
+            <Stat label={t('Completed')} value={cDone.data?.total ?? '—'} href={`/tasks?projectId=${id}&view=completed`} />
+          </div>
+          <Card title={t('About this project')}>
+            {p.description ? <p className="whitespace-pre-wrap break-words text-sm text-slate-700">{p.description}</p> : <p className="text-sm text-slate-400">{t('No description')}</p>}
+            <p className="mt-3 text-xs text-slate-500">{t('Your role: {role}', { role: t(isAdmin && !p.myRole ? 'Admin' : p.myRole === 'MANAGER' ? 'Project manager' : 'Employee') })}</p>
+          </Card>
+        </div>
+      )}
+      {section === 'tasks' && (
+        <div className="min-w-0">
           <Tabs
             value={view}
             onChange={setView}
             items={[
               { value: 'active', label: t('Active') },
+              { value: 'pending_review', label: t('Pending approval') },
               { value: 'overdue', label: t('Overdue') },
               { value: 'completed', label: t('Completed') },
               ...(canManage ? [{ value: 'awaiting_rating' as const, label: t('Awaiting rating') }] : []),
@@ -112,7 +176,8 @@ export default function ProjectDetailPage() {
           />
           <Card>{tasks.isLoading ? <SkeletonList rows={5} /> : <TaskTable tasks={tasks.data?.items ?? []} showProject={false} />}</Card>
         </div>
-        {canManage && (
+      )}
+      {section === 'employees' && canManage && (
           <Card title={t('Team ({n})', { n: members.data?.length ?? 0 })}>
             <ErrorBox error={add.error ?? remove.error} />
             <ul className="divide-y divide-slate-100">
@@ -155,8 +220,8 @@ export default function ProjectDetailPage() {
               </form>
             )}
           </Card>
-        )}
-      </div>
+      )}
+      {section === 'documents' && <DocumentsCenter projectId={id} canManage={canManage} />}
     </>
   );
 }

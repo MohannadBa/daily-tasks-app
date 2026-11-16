@@ -10,6 +10,8 @@ Company task-management platform: managers assign tasks to employees (one assign
 apps/api            NestJS REST API (/api/v1, Swagger /api/docs)
 apps/worker         Outbox relay, SQS consumer, notifications + Web Push (VAPID, web-push), deadline scheduler
 apps/web            Next.js 15 web app + PWA (App Router, Tailwind 4, BFF proxy at /bff, en/ar + RTL, manifest, public/sw.js)
+                    pages: dashboard, projects (overview/tasks/employees/documents), tasks, reviews (inbox), transfers,
+                    personal, documents, departments, reports, users (Administration), employees, notifications, settings
 packages/database   Prisma schema, migrations, seed, outbox event contracts
 packages/config     Product constants + zod env schemas (api/worker)
 packages/validation zod request schemas shared by API and clients
@@ -34,7 +36,8 @@ Demo logins (seed, local only): `manager1@dailytasks.local` / `employee1@dailyta
 
 ## Non-negotiable rules
 1. **Authorization lives in `apps/api/src/access/access.service.ts`.** Every endpoint that touches a project/task must go through it. Unauthorized access to a specific resource returns **404** (IDOR-safe). Memberships are read from the DB per request (removal is immediate).
-2. **Ratings are private.** Employees must never receive stars, averages or feedback from any endpoint. Rating routes are `@Roles(COMPANY_ADMIN, PROJECT_MANAGER)` *and* check task-manager access. `toTaskDto(task, includeRating)` must get `false` for employees. Rating audit lives in `TaskRatingRevision`, never in `TaskHistory` (employee-visible).
+   **Task visibility (company rule):** a task is *managed* by its creator and its approver only (`managedTaskScope` / `managesTask`; PMs must still manage the project). Everyone else sees a task only as its assignee or a transfer participant (`taskScope`). Managers of the same project do **not** see each other's tasks, and **ADMIN does not grant company-wide task visibility** (admins keep account/department/project administration). Admins may be assignees (added to the project as EMPLOYEE). Every list, dashboard, rating/performance figure, report dataset, task-sourced document and notification must use these scopes — never `projectId in managed projects`. Ratings: `canSeeRating` (managers of the task, never its assignee).
+2. **Ratings are private.** Employees must never receive stars, averages or feedback from any endpoint. Rating routes are `@Roles(ADMIN, PROJECT_MANAGER)` *and* check task-manager access. `toTaskDto(task, includeRating)` must get `false` for employees. Rating audit lives in `TaskRatingRevision`, never in `TaskHistory` (employee-visible).
 3. **Averages are computed**, never stored: ratings whose task is currently `COMPLETED`.
 4. **Side effects go through the outbox** (`OutboxService`) inside the same `$transaction` as the change. Never call SQS/push from the API request path.
 5. **Deadline correctness:** `completedAt`/`completedLate` are fixed at completion inside the transaction. Any deadline-related change increments `Task.scheduleVersion` and enqueues `TASK_SCHEDULE_SYNC`; the worker ignores events whose version is stale and re-checks DB state before notifying.
@@ -42,6 +45,11 @@ Demo logins (seed, local only): `manager1@dailytasks.local` / `employee1@dailyta
 7. **Files:** never store binaries in Postgres. Pre-signed PUT (type + size signed) → `confirm` (HeadObject check) → link to comment. Allowed types in `packages/config`.
 8. **Never log tokens, passwords or secrets.** Env validation errors list keys only.
 9. Completion requires a non-empty comment (validated in zod schema + API).
+10. **Only approval completes a task.** Employees submit (`TaskSubmission`, immutable once decided); the approver (`Task.approverId`) or an ADMIN with an audited `adminReason` decides. Nobody in the submission chain decides on it. Decisions are conditional claims (`updateMany … status: 'PENDING'`) → concurrent duplicates get 409. See docs/TIME_ACCOUNTING.md.
+11. **Time ledger:** every workflow transition calls `TimeLedgerService.switch()` + `sync()` in the same transaction (DB `now()`). Overdue = accountable time > budget, never the wall-clock deadline. Closed segments are immutable (DB trigger); never edit them.
+12. **Personal tasks are owner-only** (no role exception, admins included), AES-256-GCM encrypted with `PERSONAL_DATA_KEY`, and never appear in tasks, dashboards, reports, documents or notifications.
+13. **Reports:** the API builds the authorized dataset (rating data only when `includesRatings`); the worker only renders it (Chromium) and drops the dataset afterwards. Reports are private to their requester.
+14. **Accounts:** only ADMIN provisions users; temporary passwords are hashed/held by Cognito, returned at most once (SHOW_ONCE) and never logged or audited; `mustChangePassword` blocks every route except `@AllowWhilePasswordChangeRequired()`.
 
 ## Conventions
 - Validation: zod schemas in `packages/validation`; use `ZBody/ZQuery` + `ApiZodBody` in controllers.
@@ -50,9 +58,10 @@ Demo logins (seed, local only): `manager1@dailytasks.local` / `employee1@dailyta
 - Brand/design: tokens in `apps/web/src/app/globals.css` (gold #C0903D from the logo, see docs/DESIGN_SYSTEM.md). Use the tokens/components (`brand-*`, `success/warning/danger/info-*`, `Button`, `Card`, `Skeleton`, `useFeedback()` toasts/confirm); never ad-hoc colours. White text only on `brand-600`+. App name: الراسيات / Al-Rasiyat.
 - Arabic is the default locale; all dates display in Asia/Riyadh and typed deadlines are Riyadh time (`lib/format.ts`); store/transport UTC.
 - Real-time: worker `publishRealtime()` → `pg_notify('dt_realtime')` → API `RealtimeService` → WebSocket `/api/v1/realtime`. Payloads are ids/types only; clients refetch. Never put task content or rating data on the socket.
-- Web strings: wrap in `t('English text')` from `useT()` and add the Arabic entry in `apps/web/src/lib/i18n.tsx`. Use logical Tailwind classes (`ms-/me-/ps-/pe-/start-/end-/text-start`), never `ml-/mr-/left-/right-`.
+- Web strings: wrap in `t('English text')` from `useT()` and add the Arabic entry in `apps/web/src/lib/i18n.tsx` (enforced by `src/lib/i18n-coverage.test.ts`). Use logical Tailwind classes (`ms-/me-/ps-/pe-/start-/end-/text-start`), never `ml-/mr-/left-/right-`.
 - Push (see docs/PUSH_NOTIFICATIONS.md): Web Push only. Pipeline = outbox → SQS → worker `Notifier` (history row first, then one `PushDelivery` per subscription; never push from the API). VAPID private key is worker-only (Secrets Manager), never in DB/API/logs. Subscription endpoints, p256dh and auth are never returned by the API or logged (log the host only). New push endpoints must pass `isAllowedPushEndpoint` (SSRF). Never request notification permission except from the explicit Enable button. A 2xx from the push service is not proof of display.
 - PWA (see docs/PWA.md): `src/app/manifest.ts`, `public/sw.js` (bump `VERSION` on policy/precache changes), `public/offline.html`, `src/lib/pwa.ts`. The service worker must **never cache authenticated HTML or `/bff`/`/session` responses**. New public files that must load signed-out (icons, manifest, SW) need excluding in the `middleware.ts` matcher. Keep `htmlLimitedBots: /.*/` in `next.config.ts` (otherwise metadata streams into `<body>` and iOS/Chrome ignore the manifest + apple tags). Regenerate icons with `node scripts/generate-icons.mjs` in apps/web.
+- Business time on the web: never compute it client-side; show `task.time` and `GET /tasks/:id/time` (`totals`, `provisional`) only.
 - Mobile UI: phones (< lg) get the top app bar + bottom tab bar + "More" sheet in `components/app-shell.tsx`, desktop keeps the sidebar. Use `min-h-11`/16px inputs for touch, card lists instead of tables below `md`, `env(safe-area-inset-*)` for fixed bars, and check 390 px width in EN and AR (no horizontal overflow).
 - Production requires HTTPS (CDK errors without a certificate/domain). Do not weaken that: phones need HTTPS for the service worker, install and push.
 - Web → API calls must forward the client IP with `clientIpHeaders(req)` (apps/web/src/lib/client-ip.ts); otherwise per-IP throttling lumps all users together.

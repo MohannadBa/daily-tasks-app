@@ -18,6 +18,17 @@ const toastText: Partial<Record<RealtimeEvent['type'], string>> = {
   TASK_REOPENED: 'A task was reopened',
   TASK_OVERDUE: 'A task is overdue',
   TASK_DEADLINE_APPROACHING: 'A deadline is approaching',
+  TASK_SUBMITTED: 'Work was submitted for your review',
+  TASK_SUBMISSION_FORWARDED: 'Work was forwarded for your approval',
+  TASK_APPROVED: 'Your work was approved',
+  TASK_REJECTED: 'Your submission was rejected',
+  TASK_RETURNED: 'Work was returned to you',
+  TASK_TRANSFER_REQUESTED: 'A colleague wants to transfer a task to you',
+  TASK_TRANSFER_ACCEPTED: 'Your transfer was accepted',
+  TASK_TRANSFER_DECLINED: 'Your transfer was declined',
+  TASK_EXTENSION_REQUESTED: 'An extension was requested',
+  TASK_EXTENSION_DECIDED: 'Your extension request was decided',
+  REPORT_READY: 'Your report is ready',
 };
 
 /**
@@ -47,6 +58,8 @@ export function RealtimeConnector({ url, children }: { url?: string; children: R
         void qc.invalidateQueries({ queryKey: ['notifications'] });
         void qc.invalidateQueries({ queryKey: ['dashboard'] });
         void qc.invalidateQueries({ queryKey: ['tasks'] });
+        // Workflow surfaces (review inbox, transfers, documents, reports) refetch on any event.
+        for (const k of ['reviews', 'transfers', 'documents', 'reports', 'submissions', 'extensions', 'task-time']) void qc.invalidateQueries({ queryKey: [k] });
         if (e.taskId) for (const k of ['task', 'comments', 'history']) void qc.invalidateQueries({ queryKey: [k, e.taskId] });
         if (e.projectId) void qc.invalidateQueries({ queryKey: ['project', e.projectId] });
         const text = toastText[e.type];

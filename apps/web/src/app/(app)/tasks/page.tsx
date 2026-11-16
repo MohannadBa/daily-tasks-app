@@ -5,6 +5,7 @@ import { Suspense, useState } from 'react';
 import type { TaskView } from '@dailytasks/shared-types';
 import { useIsManager } from '@/components/providers';
 import { TaskTable } from '@/components/task-table';
+import { PRIORITIES, priorityLabel } from '@/components/task-form';
 import { Button, Card, ErrorBox, Input, LinkButton, PageHeader, Select, SkeletonList, Spinner, Tabs } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useT } from '@/lib/i18n';
@@ -13,17 +14,30 @@ function TasksInner() {
   const router = useRouter();
   const params = useSearchParams();
   const isManager = useIsManager();
-  const { t } = useT();
+  const { t, locale } = useT();
   const view = (params.get('view') as TaskView) || 'all';
   const projectId = params.get('projectId') ?? '';
   const sort = params.get('sort') ?? '';
+  const departmentId = params.get('departmentId') ?? '';
+  const priority = params.get('priority') ?? '';
   const page = Number(params.get('page') ?? 1);
   const [q, setQ] = useState(params.get('q') ?? '');
 
   const projects = useQuery({ queryKey: ['projects'], queryFn: () => api.projects.list() });
+  const departments = useQuery({ queryKey: ['departments'], queryFn: () => api.departments.list() });
   const tasks = useQuery({
-    queryKey: ['tasks', view, projectId, params.get('q'), sort, page],
-    queryFn: () => api.tasks.list({ view, projectId: projectId || undefined, q: params.get('q') || undefined, sort: sort || undefined, page, pageSize: 25 }),
+    queryKey: ['tasks', view, projectId, departmentId, priority, params.get('q'), sort, page],
+    queryFn: () =>
+      api.tasks.list({
+        view,
+        projectId: projectId || undefined,
+        departmentId: departmentId || undefined,
+        priority: priority || undefined,
+        q: params.get('q') || undefined,
+        sort: sort || undefined,
+        page,
+        pageSize: 25,
+      }),
     placeholderData: keepPreviousData,
   });
 
@@ -40,6 +54,9 @@ function TasksInner() {
   const tabs: Array<{ value: TaskView; label: string }> = [
     { value: 'all', label: t('All') },
     { value: 'active', label: t('Active') },
+    { value: 'to_review', label: t('To review') },
+    { value: 'pending_review', label: t('Pending approval') },
+    ...(!isManager ? [{ value: 'rejected' as TaskView, label: t('Sent back to me') }] : []),
     { value: 'overdue', label: t('Overdue') },
     { value: 'completed', label: t('Completed') },
     ...(isManager ? [{ value: 'awaiting_rating' as TaskView, label: t('Awaiting rating') }] : []),
@@ -64,6 +81,22 @@ function TasksInner() {
             {projects.data?.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
+              </option>
+            ))}
+          </Select>
+          <Select className="order-last col-span-2 sm:order-none sm:col-span-1 sm:max-w-[13rem]" value={departmentId} onChange={(e) => setParam({ departmentId: e.target.value || undefined })} aria-label={t('Filter by department')}>
+            <option value="">{t('All departments')}</option>
+            {departments.data?.map((d) => (
+              <option key={d.id} value={d.id}>
+                {locale === 'ar' ? d.nameAr : d.nameEn}
+              </option>
+            ))}
+          </Select>
+          <Select className="order-last col-span-2 sm:order-none sm:col-span-1 sm:max-w-[10rem]" value={priority} onChange={(e) => setParam({ priority: e.target.value || undefined })} aria-label={t('Filter by priority')}>
+            <option value="">{t('All priorities')}</option>
+            {PRIORITIES.map((pr) => (
+              <option key={pr} value={pr}>
+                {t(priorityLabel[pr])}
               </option>
             ))}
           </Select>

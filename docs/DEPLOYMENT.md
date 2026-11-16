@@ -68,6 +68,8 @@ Set by the CDK stack in AWS, by `docker-compose.yml` locally. **No real secret i
 | `AUTH_MODE` | ✓ | | | `cognito` | `local` is refused in production |
 | `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID` | ✓ | | | stack | |
 | `JWT_SECRET`, `JWT_*_TTL_SECONDS` | ✓ | | | — | local auth mode only |
+| **`PERSONAL_DATA_KEY`** | ✓ | | | **Secrets Manager** (`<prefix>/personal-data-key`, generated, **RETAIN**) | AES-256-GCM key for personal tasks; API only; production refuses the dev value; never rotate without re-encrypting |
+| `REPORTS_ENABLED`, `CHROMIUM_PATH`, `REPORT_RENDER_TIMEOUT_MS` | | ✓ | | image default `/usr/bin/chromium` | PDF rendering in the worker (Debian Chromium in the image; worker ≥ 1 GB memory) |
 | `SWAGGER_ENABLED` | ✓ | | | `false` in production | |
 | `RUN_MIGRATIONS` | ✓ | | | `false` | migrations run as a one-off task |
 | `HEALTH_PORT` | | ✓ | | 3002 | |
@@ -108,7 +110,7 @@ The `VAPID_*` names are accepted as aliases (the `WEB_PUSH_*` name wins if both 
      --task-definition <MigrateTaskDefinition> \
      --network-configuration "awsvpcConfiguration={subnets=[<MigrateSubnets>],securityGroups=[<MigrateSecurityGroup>]}"
    ```
-7. Create the first admin: add a `Company` row and a `User` row (`role=COMPANY_ADMIN`) via the migration task / a bastion session, then `aws cognito-idp admin-create-user --user-pool-id <UserPoolId> --username <email>`. The admin signs in, sets a password and invites everyone else from the Team page.
+7. Create the first admin: add a `Company` row and a `User` row (`role=ADMIN`) via the migration task / a bastion session, then `aws cognito-idp admin-create-user --user-pool-id <UserPoolId> --username <email>`. The admin signs in, sets a password and invites everyone else from the Team page.
 8. Confirm the SNS alarm subscription e-mail.
 9. Run the **real-device checklist** (docs/REAL_DEVICE_TESTS.md) on staging. Only then deploy production the same way with the production context and the **same image tag**.
 

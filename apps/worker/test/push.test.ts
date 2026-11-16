@@ -12,6 +12,7 @@ import { EventProcessor } from '../src/processor';
 import { classifyStatus, DisabledPushTransport, RecordingPushTransport, WebPushTransport } from '../src/push';
 import { MemoryQueue } from '../src/queue';
 import { LocalDbScheduler } from '../src/scheduler';
+import { overdueLedger, taskFields } from './fixtures';
 
 const prisma = new PrismaClient();
 let n = 0;
@@ -32,7 +33,7 @@ async function world() {
     ],
   });
   const task = await prisma.task.create({
-    data: { projectId: project.id, assigneeId: emp.id, createdById: manager.id, title: 'Check fire exits', deadline: new Date(Date.now() + 48 * 3600_000), scheduleVersion: 1 },
+    data: { projectId: project.id, assigneeId: emp.id, createdById: manager.id, title: 'Check fire exits', deadline: new Date(Date.now() + 48 * 3600_000), scheduleVersion: 1, ...(await taskFields(prisma, company.id, manager.id, new Date(Date.now() + 48 * 3600_000))) },
   });
   return { manager, emp, project, task };
 }
@@ -186,7 +187,7 @@ describe('web push fan-out', () => {
   it('overdue alerts are high urgency and require interaction', async () => {
     const w = await world();
     await sub(w.emp.id);
-    await prisma.task.update({ where: { id: w.task.id }, data: { deadline: new Date(Date.now() - 1000) } });
+    await prisma.task.update({ where: { id: w.task.id }, data: overdueLedger() });
     await processor.handle(msg(OutboxEventType.TASK_DEADLINE_DUE, { taskId: w.task.id, scheduleVersion: 1, kind: 'OVERDUE', offsetMinutes: 0 }, `OD:${w.task.id}`));
     const toEmp = push.sent.find((s) => s.payload.type === 'TASK_OVERDUE');
     expect(toEmp?.options.urgency).toBe('high');

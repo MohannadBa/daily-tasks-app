@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatBytes, formatDateTime, isoToLocalInput, localInputToIso, setFormatLocale, taskStatusDisplay } from './format';
+import { formatBytes, formatDateTime, formatDuration, isoToLocalInput, localInputToIso, setFormatLocale, taskStatusDisplay } from './format';
 import { validateFile, mimeFor } from './files';
 
 describe('taskStatusDisplay', () => {
@@ -38,5 +38,20 @@ describe('file validation', () => {
     expect(validateFile({ name: 'a.pdf', size: 30 * 1024 * 1024 })).toMatch(/larger/);
     expect(validateFile({ name: 'photo.JPG', size: 10 })).toBeNull();
     expect(mimeFor('report.docx')).toContain('wordprocessingml');
+  });
+});
+
+describe('approval workflow display', () => {
+  it('pending review is shown as awaiting approval, even when accountable time is over budget', () => {
+    expect(taskStatusDisplay({ status: 'PENDING_REVIEW', isOverdue: true, completedLate: null })).toEqual({ label: 'Pending approval', tone: 'amber' });
+  });
+  it('formats accountable durations in both locales', () => {
+    setFormatLocale('en');
+    expect(formatDuration(28 * 3600_000)).toBe('1d 4h');
+    expect(formatDuration(90 * 60_000)).toBe('1h 30m');
+    expect(formatDuration(0)).toBe('0m');
+    setFormatLocale('ar');
+    expect(formatDuration(22 * 3600_000)).toBe('22 س');
+    setFormatLocale('en');
   });
 });

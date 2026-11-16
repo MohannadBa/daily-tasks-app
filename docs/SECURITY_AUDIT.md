@@ -24,6 +24,20 @@ Date: 2026-11-16. Scope: API, worker, web/PWA, service worker, Web Push, Docker,
 
 **Accepted risk:** `zod` < 4.6.6, GHSA-mrhx-c7xc-m3w5 (memory exhaustion validating oversized constrained collections). No 3.x fix exists. Mitigation: request bodies are capped at 100 KB by the API's JSON parser, so input size is bounded. Follow-up: migrate `packages/validation`, `packages/config` and the API to zod 4.
 
+## Task visibility tightened (creator/approver + assignee)
+* Requirement: managers must not see other managers' tasks; the system admin must not see every task. Implemented centrally (`managedTaskScope`, `managesTask`, `canSeeRating` in AccessService) and applied to task lists/detail/actions, dashboards (totals, workload, awaiting rating), ratings & performance, report datasets, Documents Center (task deliverables kept "managers only"), project task counters, outbox recipients (deliverables) and worker notifications (comments, completion, overdue → creator + approver only). Admin "all approvals" inbox removed.
+* Self-protection: nobody can be the assignee of a task they create or approve; an admin who is an assignee never sees his own rating or performance figures.
+* Tests: API `task visibility: creator/approver + assignee only` (2 scenarios), updated authorization tests, worker fan-out tests.
+
+## Enterprise platform (backend + frontend) security verification
+* **Authorization stays server-side.** Every new screen only hides actions using server-computed `permissions`; each endpoint re-checks (AccessService, 404 for resources outside the caller's scope). Tested: approver-only decisions, no self-approval (chain members), delegator-only forward/return, recipient-only transfer accept/decline, approver/admin-only extension decisions, managers-only document upload/archive, `MANAGERS_ONLY` documents hidden from employees (UI + API 404).
+* **Ratings:** review inbox, dashboards (workload), reports for employees and every task DTO used by new screens exclude rating data; reports include ratings only when the API decided `includesRatings` (admins / managers of all included projects).
+* **Personal tasks:** owner-only for every role including ADMIN (404), AES-256-GCM with the owner id as AAD; never in tasks, dashboards (company KPIs), reports, documents or notifications. Browser test verifies other roles never receive them.
+* **Temporary passwords:** generated with a CSPRNG, stored only as bcrypt (local) or in Cognito, returned once in the create/reset response, kept only in React state on the Administration page (browser test asserts it is not in localStorage/sessionStorage/cookies), never logged or audited. `mustChangePassword` blocks every API route except `/auth/me` and `/auth/change-password`; the web app shows a blocking change-password screen.
+* **Document preview:** inline disposition only for images/PDF (no HTML/SVG inline → no stored XSS via S3); everything else downloads.
+* **Notifications / WebSocket:** new event payloads carry ids, types and short reasons only; WebSocket events remain ids/types and trigger refetches.
+* **Concurrency:** decisions are conditional claims → duplicate approvals/rejections get 409, never double effects.
+
 ## Checks with no finding
 
 | Area | Result |

@@ -17,6 +17,8 @@
     "@dailytasks/config": "workspace:*",
     "@dailytasks/database": "workspace:*",
     "@dailytasks/shared-types": "workspace:*",
+    "@fontsource/ibm-plex-sans-arabic": "5.2.6",
+    "playwright-core": "1.55.1",
     "web-push": "^3.6.7"
   },
   "devDependencies": {

@@ -7,3 +7,4 @@ process.env.S3_BUCKET = 'test-bucket';
 process.env.SQS_EVENTS_QUEUE_URL = 'http://localhost:4566/000000000000/test';
 process.env.SWAGGER_ENABLED = 'false';
 process.env.WEB_PUSH_VAPID_PUBLIC_KEY = 'BMW1eav9vRcXwjakWQGhbeHneaQ6NiDCI-GNmK_LI3EcGGlxknRwdVxgjOvKKQSXcZDOZb9QN5g56IgICPtAT5o';
+process.env.PERSONAL_DATA_KEY = 'local-development-only-personal-data-key-0123456789';

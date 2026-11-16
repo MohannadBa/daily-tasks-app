@@ -21,14 +21,14 @@ export class CompanyController {
   ) {}
 
   @Get()
-  @Roles(UserRole.COMPANY_ADMIN, UserRole.PROJECT_MANAGER)
+  @Roles(UserRole.ADMIN, UserRole.PROJECT_MANAGER)
   async get(@CurrentUser() user: AuthUser) {
     return toDto(await this.prisma.company.findUniqueOrThrow({ where: { id: user.companyId } }));
   }
 
   /** Changing reminder offsets re-schedules every open task (old schedules become stale versions). */
   @Patch()
-  @Roles(UserRole.COMPANY_ADMIN)
+  @Roles(UserRole.ADMIN)
   @ApiZodBody(updateCompanySettingsSchema)
   async update(@CurrentUser() user: AuthUser, @ZBody(updateCompanySettingsSchema) body: z.infer<typeof updateCompanySettingsSchema>) {
     const company = await this.prisma.$transaction(async (tx) => {

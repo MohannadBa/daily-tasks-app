@@ -26,7 +26,7 @@ export default function EditTaskPage() {
           task={task.data}
           submitLabel="Save changes"
           onSubmit={async (v) => {
-            await api.tasks.update(id, { title: v.title, description: v.description, deadline: v.deadline });
+            await api.tasks.update(id, { title: v.title, description: v.description, deadline: v.deadline, priority: v.priority });
             if (v.files.length) await uploadFiles(id, v.files);
             await qc.invalidateQueries({ queryKey: ['task', id] });
             await qc.invalidateQueries({ queryKey: ['tasks'] });

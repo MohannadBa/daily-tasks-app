@@ -8,6 +8,14 @@ export const ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024; // 25 MB per file
 export const ATTACHMENT_MAX_PER_REQUEST = 10;
 
 /** Allow-list of MIME types -> permitted file extensions. */
+/**
+ * Types that may be served inline (rendered in the browser) for in-app previews. Never HTML/SVG/text:
+ * those are always downloaded, so a stored file can never execute in a browsing context.
+ */
+export const INLINE_PREVIEW_TYPES: readonly string[] = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
+/** Image types the web app shows as thumbnails (HEIC/HEIF are not renderable in most browsers). */
+export const IMAGE_PREVIEW_TYPES: readonly string[] = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+
 export const ALLOWED_ATTACHMENT_TYPES: Record<string, string[]> = {
   'image/jpeg': ['jpg', 'jpeg'],
   'image/png': ['png'],
@@ -40,6 +48,17 @@ export const PUSH_MAX_ATTEMPTS = 5;
 export const PUSH_TTL_SECONDS = 24 * 3600;
 /** Consecutive failed deliveries after which a subscription is deactivated. */
 export const PUSH_MAX_CONSECUTIVE_FAILURES = 20;
+/** Local-development personal-data key from docker-compose.yml / tests. Refused in production. */
+export const DEV_PERSONAL_DATA_KEY = 'local-development-only-personal-data-key-0123456789';
+/** Report PDFs and datasets are kept this long. */
+export const REPORT_RETENTION_DAYS = 7;
+/** Report jobs per user per hour. */
+export const REPORT_JOBS_PER_HOUR = 20;
+/** Maximum tasks in one employee report. */
+export const REPORT_MAX_TASKS = 2000;
+/** Maximum transfer chain depth per cycle. */
+export const MAX_TRANSFER_DEPTH = 3;
+
 /** Local-development VAPID public key from docker-compose.yml. Refused in production. */
 export const DEV_VAPID_PUBLIC_KEY = 'BMW1eav9vRcXwjakWQGhbeHneaQ6NiDCI-GNmK_LI3EcGGlxknRwdVxgjOvKKQSXcZDOZb9QN5g56IgICPtAT5o';
 
@@ -114,6 +133,11 @@ export const apiEnvSchema = z
     WEB_PUSH_ALLOWED_HOSTS: z.string().optional(),
     /** Accept http:// endpoints (local fake push service in tests). Refused in production. */
     WEB_PUSH_ALLOW_INSECURE_ENDPOINTS: bool.default(false),
+    /**
+     * Secret for encrypting personal tasks at rest (AES-256-GCM, key = SHA-256 of this value).
+     * Secrets Manager in AWS. Losing it makes existing personal tasks unreadable.
+     */
+    PERSONAL_DATA_KEY: z.string().default(''),
   })
   .superRefine((env, ctx) => {
     if (env.AUTH_MODE === 'local') {
@@ -124,7 +148,14 @@ export const apiEnvSchema = z
         ctx.addIssue({ code: 'custom', path: ['AUTH_MODE'], message: 'AUTH_MODE=local is not allowed in production' });
       }
     }
-    if (env.NODE_ENV === 'production') pushProductionChecks(env, ctx);
+    if (env.NODE_ENV === 'production') {
+      pushProductionChecks(env, ctx);
+      if (env.PERSONAL_DATA_KEY.length < 32 || env.PERSONAL_DATA_KEY === DEV_PERSONAL_DATA_KEY) {
+        ctx.addIssue({ code: 'custom', path: ['PERSONAL_DATA_KEY'], message: 'PERSONAL_DATA_KEY (>=32 chars, not the development value) is required in production' });
+      }
+    } else if (env.PERSONAL_DATA_KEY.length < 32) {
+      ctx.addIssue({ code: 'custom', path: ['PERSONAL_DATA_KEY'], message: 'PERSONAL_DATA_KEY (>=32 chars) is required' });
+    }
     if (env.AUTH_MODE === 'cognito' && (!env.COGNITO_USER_POOL_ID || !env.COGNITO_CLIENT_ID)) {
       ctx.addIssue({ code: 'custom', path: ['COGNITO_USER_POOL_ID'], message: 'Cognito settings are required when AUTH_MODE=cognito' });
     }
@@ -153,6 +184,10 @@ export const workerEnvSchema = z.object({
   WEB_PUSH_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
   /** Push requests sent in parallel. */
   WEB_PUSH_CONCURRENCY: z.coerce.number().int().positive().max(100).default(10),
+  /** PDF reports: headless Chromium executable (Debian package in the worker image). */
+  REPORTS_ENABLED: bool.default(true),
+  CHROMIUM_PATH: z.string().optional(),
+  REPORT_RENDER_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
 }).superRefine((env, ctx) => {
   if (env.NODE_ENV === 'production') pushProductionChecks(env, ctx);
   if (env.PUSH_ENABLED && env.WEB_PUSH_VAPID_PUBLIC_KEY && !env.WEB_PUSH_VAPID_PRIVATE_KEY) {

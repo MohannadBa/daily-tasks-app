@@ -27,7 +27,7 @@ export default function ProjectsPage() {
 
   return (
     <>
-      <PageHeader title={t('Projects')} actions={me.role === 'COMPANY_ADMIN' && <Button onClick={() => setShowForm((s) => !s)}>{t('New project')}</Button>} />
+      <PageHeader title={t('Projects')} actions={me.role === 'ADMIN' && <Button onClick={() => setShowForm((s) => !s)}>{t('New project')}</Button>} />
       {showForm && (
         <Card className="mb-6" title={t('Create project')}>
           <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); create.mutate(); }}>

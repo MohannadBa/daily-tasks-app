@@ -6,6 +6,8 @@ import { formatDateTime, formatRelative, taskStatusDisplay } from '@/lib/format'
 import { Stars } from './stars';
 import { Badge, Empty } from './ui';
 import { useT } from '@/lib/i18n';
+import { priorityTone } from '@/lib/labels';
+import { priorityLabel } from './task-form';
 
 export function StatusBadge({ task }: { task: Pick<TaskDto, 'status' | 'isOverdue' | 'completedLate'> }) {
   const { t } = useT();
@@ -14,7 +16,7 @@ export function StatusBadge({ task }: { task: Pick<TaskDto, 'status' | 'isOverdu
 }
 
 export function TaskTable({ tasks, showProject = true, emptyText = 'No tasks found' }: { tasks: TaskDto[]; showProject?: boolean; emptyText?: string }) {
-  const { t: tr } = useT();
+  const { t: tr, locale } = useT();
   if (tasks.length === 0) return <Empty title={tr(emptyText)} />;
   const showRating = tasks.some((t) => t.rating !== undefined);
   return (
@@ -39,7 +41,9 @@ export function TaskTable({ tasks, showProject = true, emptyText = 'No tasks fou
                 <Link href={`/tasks/${t.id}`} className="font-medium text-slate-900 hover:text-brand-700">
                   {t.title}
                 </Link>
-                <div className="mt-0.5 flex gap-3 text-xs text-slate-400">
+                <div className="mt-0.5 flex flex-wrap items-center gap-3 text-xs text-slate-400">
+                  {t.priority !== 'MEDIUM' && <Badge tone={priorityTone[t.priority]}>{tr(priorityLabel[t.priority])}</Badge>}
+                  {t.department && <span>{locale === 'ar' ? t.department.nameAr : t.department.nameEn}</span>}
                   {t.commentCount > 0 && (
                     <span className="inline-flex items-center gap-1">
                       <MessageSquare className="h-3 w-3" aria-hidden /> {t.commentCount}
@@ -83,6 +87,11 @@ export function TaskTable({ tasks, showProject = true, emptyText = 'No tasks fou
   );
 }
 
+function PriorityBadge({ task }: { task: TaskDto }) {
+  const { t } = useT();
+  return <Badge tone={priorityTone[task.priority]}>{t(priorityLabel[task.priority])}</Badge>;
+}
+
 function RatingCell({ task }: { task: TaskDto }) {
   const { t } = useT();
   if (task.status !== 'COMPLETED') return null;
@@ -104,6 +113,7 @@ function TaskCards({ tasks, showProject, showRating }: { tasks: TaskDto[]; showP
                 </span>
               </div>
               {showProject && <p className="truncate text-xs text-slate-500">{task.projectName}</p>}
+              {task.priority !== 'MEDIUM' && <PriorityBadge task={task} />}
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
                 <span className="inline-flex min-w-0 items-center gap-1">
                   <UserRound className="h-3.5 w-3.5 shrink-0" aria-hidden />

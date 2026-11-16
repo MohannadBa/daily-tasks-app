@@ -11,7 +11,8 @@ datasource db {
 }
 
 enum UserRole {
-  COMPANY_ADMIN
+  /// Company administrator (formerly COMPANY_ADMIN; renamed in migration enterprise_enums).
+  ADMIN
   PROJECT_MANAGER
   EMPLOYEE
 }
@@ -29,7 +30,103 @@ enum ProjectStatus {
 enum TaskStatus {
   ASSIGNED
   IN_PROGRESS
+  /// A completion submission awaits review (delegator or approving manager).
+  PENDING_REVIEW
+  /// Approved by the task's approver. Only approval sets this status.
   COMPLETED
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+/// Who must decide on a pending submission.
+enum ReviewStage {
+  /// The employee who delegated the task (transfer chain) reviews the delegate's work.
+  DELEGATOR
+  /// The task approver (original manager) makes the final decision.
+  MANAGER
+}
+
+enum SubmissionStatus {
+  PENDING
+  /// Delegator accepted the delegate's work and sent it up the chain.
+  FORWARDED
+  APPROVED
+  REJECTED
+  /// Delegator sent the delegate's work back.
+  RETURNED
+  WITHDRAWN
+}
+
+/// Time-ledger segment kinds (see docs/TIME_ACCOUNTING.md).
+enum SegmentKind {
+  /// The responsible employee is working (ASSIGNED / IN_PROGRESS). Charged to them.
+  ACTIVE_WORK
+  /// A transfer request awaits the recipient. Charged to the requester.
+  TRANSFER_PENDING
+  /// A delegate's submission awaits the delegator. Forwarded: charged to the delegator; returned/withdrawn: charged to the submitter.
+  DELEGATOR_REVIEW
+  /// Open manager review: clock provisionally paused until decided.
+  PENDING_REVIEW
+  /// Closed manager review that ended in approval: excluded from accountable time.
+  APPROVED_REVIEW
+  /// Closed manager review that ended in rejection/withdrawal: charged to the submitter.
+  REJECTED_REVIEW
+}
+
+enum TransferStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  CANCELLED
+}
+
+enum ExtensionStatus {
+  PENDING
+  APPROVED
+  PARTIALLY_APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum AttachmentKind {
+  /// Manager-provided task instructions / reference files.
+  INSTRUCTION
+  COMMENT
+  /// Attached to a completion submission.
+  SUBMISSION
+}
+
+enum DocumentSource {
+  TASK_SUBMISSION
+  MANUAL
+}
+
+enum DocumentVisibility {
+  PROJECT_MEMBERS
+  MANAGERS_ONLY
+}
+
+enum PersonalTaskStatus {
+  OPEN
+  DONE
+}
+
+enum ReportType {
+  TASK
+  EMPLOYEE
+  PROJECTS
+}
+
+enum ReportStatus {
+  QUEUED
+  RENDERING
+  READY
+  FAILED
 }
 
 enum TaskHistoryAction {
@@ -42,6 +139,23 @@ enum TaskHistoryAction {
   ATTACHMENT_ADDED
   COMPLETED
   REOPENED
+  PRIORITY_CHANGED
+  DEPARTMENT_CHANGED
+  SUBMITTED
+  FORWARDED
+  APPROVED
+  REJECTED
+  RETURNED
+  SUBMISSION_WITHDRAWN
+  TRANSFER_REQUESTED
+  TRANSFER_ACCEPTED
+  TRANSFER_DECLINED
+  TRANSFER_CANCELLED
+  EXTENSION_REQUESTED
+  EXTENSION_DECIDED
+  EXTENSION_CANCELLED
+  APPROVER_CHANGED
+  DOCUMENT_REGISTERED
 }
 
 enum AttachmentStatus {
@@ -60,6 +174,20 @@ enum NotificationType {
   TASK_REOPENED
   /// User-requested test push from the notification settings page.
   PUSH_TEST
+  TASK_SUBMITTED
+  TASK_SUBMISSION_FORWARDED
+  TASK_APPROVED
+  TASK_REJECTED
+  TASK_RETURNED
+  TASK_TRANSFER_REQUESTED
+  TASK_TRANSFER_ACCEPTED
+  TASK_TRANSFER_DECLINED
+  TASK_EXTENSION_REQUESTED
+  TASK_EXTENSION_DECIDED
+  DOCUMENT_REGISTERED
+  USER_CREATED
+  PASSWORD_CHANGE_REQUIRED
+  REPORT_READY
 }
 
 /// Platform a browser push subscription was created on (derived from the user agent).
@@ -96,8 +224,10 @@ model Company {
   createdAt              DateTime @default(now()) @db.Timestamptz(3)
   updatedAt              DateTime @updatedAt @db.Timestamptz(3)
 
-  users    User[]
-  projects Project[]
+  users              User[]
+  projects           Project[]
+  departments        Department[]
+  documentCategories DocumentCategory[]
 }
 
 model User {
@@ -113,6 +243,11 @@ model User {
   /// bcrypt hash, only used in AUTH_MODE=local (development/test).
   passwordHash String?
   lastLoginAt  DateTime? @db.Timestamptz(3)
+  /// Set when an admin provisions/resets the account; the user must choose a new password first.
+  mustChangePassword Boolean   @default(false)
+  passwordChangedAt  DateTime? @db.Timestamptz(3)
+  createdById        String?   @db.Uuid
+  deactivatedAt      DateTime? @db.Timestamptz(3)
   createdAt    DateTime  @default(now()) @db.Timestamptz(3)
   updatedAt    DateTime  @updatedAt @db.Timestamptz(3)
 
@@ -128,6 +263,15 @@ model User {
   notifications  Notification[]
   pushSubscriptions PushSubscription[]
   historyEntries TaskHistory[]
+  departmentMemberships DepartmentMembership[]
+  approvingTasks        Task[]                     @relation("TaskApprover")
+  submissions           TaskSubmission[]           @relation("SubmissionAuthor")
+  transfersFrom         TaskTransfer[]             @relation("TransferFrom")
+  transfersTo           TaskTransfer[]             @relation("TransferTo")
+  extensionRequests     DeadlineExtensionRequest[] @relation("ExtensionRequester")
+  personalTasks         PersonalTask[]
+  documentsUploaded     ProjectDocument[]
+  reportJobs            ReportJob[]
 
   @@index([companyId, role])
 }
@@ -145,6 +289,7 @@ model Project {
   company     Company             @relation(fields: [companyId], references: [id], onDelete: Restrict)
   memberships ProjectMembership[]
   tasks       Task[]
+  documents   ProjectDocument[]
 
   @@index([companyId, status])
 }
@@ -184,20 +329,52 @@ model Task {
   /// Incremented whenever deadline-related state changes; stale scheduled events are ignored.
   scheduleVersion Int        @default(0)
   archivedAt      DateTime?  @db.Timestamptz(3)
+  /// Department chosen at assignment. Null only for tasks created before departments existed.
+  departmentId    String?      @db.Uuid
+  priority        TaskPriority @default(MEDIUM)
+  /// Final approval authority (the assigning manager by default). Only this user (or an audited admin) can approve.
+  approverId      String       @db.Uuid
+  /// Deadline of the first assignment. Never changed (extensions and edits change `deadline`).
+  originalDeadline DateTime    @db.Timestamptz(3)
+  /// Current work cycle (1 + number of reopenings).
+  currentCycle    Int          @default(1)
+  // --- Denormalised time-ledger state for the current cycle (maintained in the same transaction) ---
+  /// Allowed accountable time for the current cycle in ms (approved deadline − cycle start).
+  budgetMs        BigInt       @default(0)
+  /// Accountable ms from closed charged segments of the current cycle.
+  chargedMs       BigInt       @default(0)
+  /// Start of the open segment when it is charged (clock running); null while paused or completed.
+  clockRunningSince DateTime?  @db.Timestamptz(3)
+  /// When accountable time reaches the budget if the clock keeps running; null while paused.
+  effectiveDueAt  DateTime?    @db.Timestamptz(3)
+  pendingSubmissionId String?  @db.Uuid
+  pendingTransferId   String?  @db.Uuid
+  pendingExtensionId  String?  @db.Uuid
   createdAt       DateTime   @default(now()) @db.Timestamptz(3)
   updatedAt       DateTime   @updatedAt @db.Timestamptz(3)
 
   project     Project          @relation(fields: [projectId], references: [id], onDelete: Restrict)
   assignee    User             @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: Restrict)
   createdBy   User             @relation("TaskCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  approver    User             @relation("TaskApprover", fields: [approverId], references: [id], onDelete: Restrict)
+  department  Department?      @relation(fields: [departmentId], references: [id], onDelete: Restrict)
   comments    TaskComment[]
   attachments TaskAttachment[]
   rating      TaskRating?
   history     TaskHistory[]
+  cycles      TaskCycle[]
+  segments    TaskTimeSegment[]
+  submissions TaskSubmission[]
+  transfers   TaskTransfer[]
+  extensions  DeadlineExtensionRequest[]
+  documents   ProjectDocument[]
 
   @@index([projectId, status])
   @@index([assigneeId, status])
   @@index([status, deadline])
+  @@index([departmentId, status])
+  @@index([approverId, status])
+  @@index([status, effectiveDueAt])
 }
 
 model TaskComment {
@@ -212,6 +389,7 @@ model TaskComment {
   task        Task             @relation(fields: [taskId], references: [id], onDelete: Restrict)
   author      User             @relation(fields: [authorId], references: [id], onDelete: Restrict)
   attachments TaskAttachment[]
+  submission  TaskSubmission?
 
   @@index([taskId, createdAt])
 }
@@ -227,6 +405,7 @@ model TaskAttachment {
   sizeBytes    Int
   storageKey   String           @unique
   status       AttachmentStatus @default(PENDING)
+  kind         AttachmentKind   @default(COMMENT)
   uploadedAt   DateTime?        @db.Timestamptz(3)
   createdAt    DateTime         @default(now()) @db.Timestamptz(3)
   updatedAt    DateTime         @updatedAt @db.Timestamptz(3)
@@ -234,6 +413,7 @@ model TaskAttachment {
   task       Task         @relation(fields: [taskId], references: [id], onDelete: Restrict)
   comment    TaskComment? @relation(fields: [commentId], references: [id], onDelete: Restrict)
   uploadedBy User         @relation(fields: [uploadedById], references: [id], onDelete: Restrict)
+  document   ProjectDocument?
 
   @@index([taskId, status])
   @@index([commentId])
@@ -364,6 +544,318 @@ model PushDelivery {
   @@unique([notificationId, subscriptionId])
   @@index([subscriptionId, createdAt])
   @@index([status, createdAt])
+}
+
+/* ======================================================================
+ * Departments
+ * ==================================================================== */
+
+/// Company department. Deactivated, never deleted (tasks keep their historical department).
+model Department {
+  id        String   @id @default(uuid()) @db.Uuid
+  companyId String   @db.Uuid
+  code      String
+  nameAr    String
+  nameEn    String
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  company     Company                @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  memberships DepartmentMembership[]
+  tasks       Task[]
+  documents   ProjectDocument[]
+
+  @@unique([companyId, code])
+  @@unique([companyId, nameAr])
+  @@index([companyId, isActive, sortOrder])
+}
+
+/// User ↔ department (many-to-many, exactly one primary). Removal is soft so history stays.
+model DepartmentMembership {
+  id           String    @id @default(uuid()) @db.Uuid
+  departmentId String    @db.Uuid
+  userId       String    @db.Uuid
+  isPrimary    Boolean   @default(false)
+  removedAt    DateTime? @db.Timestamptz(3)
+  createdAt    DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime  @updatedAt @db.Timestamptz(3)
+
+  department Department @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  user       User       @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([departmentId, userId])
+  @@index([userId, removedAt])
+  @@index([departmentId, removedAt])
+}
+
+/* ======================================================================
+ * Workflow & time ledger
+ * ==================================================================== */
+
+/// One work cycle: the initial assignment, then one per reopening. Completion facts are a snapshot
+/// written once at approval (immutable).
+model TaskCycle {
+  id               String    @id @default(uuid()) @db.Uuid
+  taskId           String    @db.Uuid
+  cycleNo          Int
+  startedAt        DateTime  @db.Timestamptz(3)
+  /// Deadline at the start of this cycle (preserved).
+  originalDeadline DateTime  @db.Timestamptz(3)
+  /// Current official deadline of this cycle (changed by approved extensions / manager edits).
+  approvedDeadline DateTime  @db.Timestamptz(3)
+  reopenReason     String?
+  reopenedById     String?   @db.Uuid
+  completedAt      DateTime? @db.Timestamptz(3)
+  approvedById     String?   @db.Uuid
+  accountableMs    BigInt?
+  budgetMs         BigInt?
+  lateMs           BigInt?
+  completedLate    Boolean?
+  /// LIVE, or BACKFILL for cycles reconstructed from pre-ledger history.
+  source           String    @default("LIVE")
+  createdAt        DateTime  @default(now()) @db.Timestamptz(3)
+
+  task        Task                       @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  segments    TaskTimeSegment[]
+  submissions TaskSubmission[]
+  transfers   TaskTransfer[]
+  extensions  DeadlineExtensionRequest[]
+
+  @@unique([taskId, cycleNo])
+}
+
+/// Append-only accountable-time ledger. Exactly one open segment per open task; closed rows are
+/// immutable (DB trigger). See docs/TIME_ACCOUNTING.md for the charging rules.
+model TaskTimeSegment {
+  id                String      @id @default(uuid()) @db.Uuid
+  taskId            String      @db.Uuid
+  cycleId           String      @db.Uuid
+  kind              SegmentKind
+  /// Whose clock this is while open (null for manager review).
+  responsibleUserId String?     @db.Uuid
+  /// Set when closed: who the time is charged to; null when excluded or still open.
+  chargedToUserId   String?     @db.Uuid
+  /// True once closed and counted in accountable time.
+  charged           Boolean     @default(false)
+  startedAt         DateTime    @db.Timestamptz(3)
+  endedAt           DateTime?   @db.Timestamptz(3)
+  submissionId      String?     @db.Uuid
+  transferId        String?     @db.Uuid
+  closeReason       String?
+  source            String      @default("LIVE")
+
+  task  Task      @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  cycle TaskCycle @relation(fields: [cycleId], references: [id], onDelete: Restrict)
+
+  @@index([cycleId, startedAt])
+  @@index([chargedToUserId, startedAt])
+  @@index([taskId, startedAt])
+}
+
+/// Immutable completion submission (comment + attachments live on `comment`).
+model TaskSubmission {
+  id              String           @id @default(uuid()) @db.Uuid
+  taskId          String           @db.Uuid
+  cycleId         String           @db.Uuid
+  submittedById   String           @db.Uuid
+  commentId       String           @unique @db.Uuid
+  stage           ReviewStage
+  reviewerId      String           @db.Uuid
+  status          SubmissionStatus @default(PENDING)
+  /// For a MANAGER-stage submission created by a delegator's forward: the delegate submission it forwards.
+  forwardedFromId String?          @db.Uuid
+  decidedById     String?          @db.Uuid
+  decidedAt       DateTime?        @db.Timestamptz(3)
+  decisionReason  String?
+  /// Admin break-glass decision (approver bypassed by ADMIN, audited).
+  decidedAsAdmin  Boolean          @default(false)
+  createdAt       DateTime         @default(now()) @db.Timestamptz(3)
+
+  task          Task            @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  cycle         TaskCycle       @relation(fields: [cycleId], references: [id], onDelete: Restrict)
+  submittedBy   User            @relation("SubmissionAuthor", fields: [submittedById], references: [id], onDelete: Restrict)
+  comment       TaskComment     @relation(fields: [commentId], references: [id], onDelete: Restrict)
+  forwardedFrom TaskSubmission? @relation("SubmissionForward", fields: [forwardedFromId], references: [id], onDelete: Restrict)
+  forwards      TaskSubmission[] @relation("SubmissionForward")
+  documents     ProjectDocument[]
+
+  @@index([taskId, createdAt])
+  @@index([reviewerId, status])
+}
+
+model TaskTransfer {
+  id               String         @id @default(uuid()) @db.Uuid
+  taskId           String         @db.Uuid
+  cycleId          String         @db.Uuid
+  fromUserId       String         @db.Uuid
+  toUserId         String         @db.Uuid
+  reason           String
+  status           TransferStatus @default(PENDING)
+  /// Position in the delegation chain of the cycle (1 = first hop).
+  depth            Int
+  parentTransferId String?        @db.Uuid
+  requestedAt      DateTime       @default(now()) @db.Timestamptz(3)
+  respondedAt      DateTime?      @db.Timestamptz(3)
+  responseNote     String?
+  /// Set when the work came back up past this hop (delegate's work forwarded or task returned up).
+  closedAt         DateTime?      @db.Timestamptz(3)
+
+  task   Task      @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  cycle  TaskCycle @relation(fields: [cycleId], references: [id], onDelete: Restrict)
+  from   User      @relation("TransferFrom", fields: [fromUserId], references: [id], onDelete: Restrict)
+  to     User      @relation("TransferTo", fields: [toUserId], references: [id], onDelete: Restrict)
+
+  @@index([taskId, requestedAt])
+  @@index([toUserId, status])
+}
+
+model DeadlineExtensionRequest {
+  id                String          @id @default(uuid()) @db.Uuid
+  taskId            String          @db.Uuid
+  cycleId           String          @db.Uuid
+  requestedById     String          @db.Uuid
+  reason            String
+  requestedMinutes  Int
+  status            ExtensionStatus @default(PENDING)
+  grantedMinutes    Int?
+  previousDeadline  DateTime        @db.Timestamptz(3)
+  newDeadline       DateTime?       @db.Timestamptz(3)
+  decidedById       String?         @db.Uuid
+  decidedAt         DateTime?       @db.Timestamptz(3)
+  decisionNote      String?
+  createdAt         DateTime        @default(now()) @db.Timestamptz(3)
+
+  task        Task      @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  cycle       TaskCycle @relation(fields: [cycleId], references: [id], onDelete: Restrict)
+  requestedBy User      @relation("ExtensionRequester", fields: [requestedById], references: [id], onDelete: Restrict)
+
+  @@index([taskId, createdAt])
+}
+
+/* ======================================================================
+ * Project documents
+ * ==================================================================== */
+
+model DocumentCategory {
+  id        String   @id @default(uuid()) @db.Uuid
+  companyId String   @db.Uuid
+  code      String
+  nameAr    String
+  nameEn    String
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  company   Company           @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  documents ProjectDocument[]
+
+  @@unique([companyId, code])
+}
+
+/// Project Documents Center entry. Task-sourced documents reuse the attachment's S3 object
+/// (no copy); manual uploads carry their own object.
+model ProjectDocument {
+  id           String             @id @default(uuid()) @db.Uuid
+  projectId    String             @db.Uuid
+  categoryId   String             @db.Uuid
+  title        String
+  description  String?
+  source       DocumentSource
+  visibility   DocumentVisibility
+  attachmentId String?            @unique @db.Uuid
+  storageKey   String?            @unique
+  fileName     String
+  contentType  String
+  sizeBytes    Int
+  status       AttachmentStatus   @default(UPLOADED)
+  taskId       String?            @db.Uuid
+  submissionId String?            @db.Uuid
+  departmentId String?            @db.Uuid
+  uploadedById String             @db.Uuid
+  archivedAt   DateTime?          @db.Timestamptz(3)
+  archivedById String?            @db.Uuid
+  createdAt    DateTime           @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime           @updatedAt @db.Timestamptz(3)
+
+  project    Project          @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  category   DocumentCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  attachment TaskAttachment?  @relation(fields: [attachmentId], references: [id], onDelete: Restrict)
+  task       Task?            @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  submission TaskSubmission?  @relation(fields: [submissionId], references: [id], onDelete: Restrict)
+  department Department?      @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  uploadedBy User             @relation(fields: [uploadedById], references: [id], onDelete: Restrict)
+
+  @@index([projectId, archivedAt, createdAt])
+  @@index([projectId, categoryId])
+}
+
+/* ======================================================================
+ * Personal tasks (owner-only, encrypted title/notes)
+ * ==================================================================== */
+
+/// Private to its owner. Never joined with company data. Title/notes are AES-256-GCM ciphertext.
+model PersonalTask {
+  id          String             @id @default(uuid()) @db.Uuid
+  ownerId     String             @db.Uuid
+  titleEnc    String
+  notesEnc    String?
+  dueAt       DateTime?          @db.Timestamptz(3)
+  priority    TaskPriority       @default(MEDIUM)
+  status      PersonalTaskStatus @default(OPEN)
+  completedAt DateTime?          @db.Timestamptz(3)
+  createdAt   DateTime           @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime           @updatedAt @db.Timestamptz(3)
+
+  owner User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([ownerId, status, dueAt])
+}
+
+/* ======================================================================
+ * Reports & audit
+ * ==================================================================== */
+
+/// PDF report job. The API builds the authorized dataset; the worker only renders it.
+model ReportJob {
+  id              String       @id @default(uuid()) @db.Uuid
+  companyId       String       @db.Uuid
+  requestedById   String       @db.Uuid
+  type            ReportType
+  params          Json
+  /// Decided by the API at request time (authorized managers/admins only).
+  includesRatings Boolean      @default(false)
+  locale          String       @default("ar")
+  dataset         Json?
+  status          ReportStatus @default(QUEUED)
+  storageKey      String?
+  sizeBytes       Int?
+  error           String?
+  createdAt       DateTime     @default(now()) @db.Timestamptz(3)
+  startedAt       DateTime?    @db.Timestamptz(3)
+  completedAt     DateTime?    @db.Timestamptz(3)
+  expiresAt       DateTime     @db.Timestamptz(3)
+
+  requestedBy User @relation(fields: [requestedById], references: [id], onDelete: Cascade)
+
+  @@index([requestedById, createdAt])
+  @@index([status, createdAt])
+}
+
+/// Administrative audit trail (accounts, departments, memberships). Never contains secrets.
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  companyId  String   @db.Uuid
+  actorId    String?  @db.Uuid
+  action     String
+  entityType String
+  entityId   String   @db.Uuid
+  metadata   Json     @default("{}")
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([entityType, entityId, createdAt])
+  @@index([companyId, createdAt])
 }
 
 /// Transactional outbox. Written in the same DB transaction as the business change and

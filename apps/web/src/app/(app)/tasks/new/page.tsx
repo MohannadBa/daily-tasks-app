@@ -23,7 +23,15 @@ function NewTask() {
           submitLabel="Create task"
           defaultProjectId={params.get('projectId') ?? undefined}
           onSubmit={async (v) => {
-            const task = await api.tasks.create({ projectId: v.projectId, assigneeId: v.assigneeId, title: v.title, description: v.description, deadline: v.deadline });
+            const task = await api.tasks.create({
+              projectId: v.projectId,
+              departmentId: v.departmentId,
+              assigneeId: v.assigneeId,
+              title: v.title,
+              description: v.description,
+              deadline: v.deadline,
+              priority: v.priority,
+            });
             if (v.files.length) await uploadFiles(task.id, v.files);
             toast(t('Task created. The employee has been notified.'));
             await qc.invalidateQueries({ queryKey: ['tasks'] });

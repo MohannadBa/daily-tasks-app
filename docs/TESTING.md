@@ -15,6 +15,9 @@
 | Platform features (dashboard scoping, sorting, password recovery, WebSocket auth/origin/isolation/expiry) | `apps/api/test/platform.e2e-spec.ts` | jest + ws | compose Postgres |
 | Worker maintenance (upload retention, real-time publisher, Arabic defaults) | `apps/worker/test/maintenance.test.ts` | vitest | compose Postgres |
 | Real-time client (backoff, reauth, cleanup) | `apps/web/src/lib/realtime.test.ts` | vitest | — |
+| **Time-ledger engine** (required 22h/8h and 22h/6h examples, transfers, rejections, extensions, strict boundary, 500 randomized invariants) | `packages/database/test/time-ledger.test.ts` | vitest | — |
+| **Enterprise API** (departments, approval workflow incl. concurrency, time accounting, transfer chain A→B→A→manager, circular/depth protection, extensions, documents, personal-task isolation, reports gating, admin provisioning + forced password change) | `apps/api/test/enterprise.e2e-spec.ts` | jest + supertest | compose Postgres |
+| **Enterprise worker** (workflow notifications EN/AR, ledger-based reminders/overdue, PDF HTML + real Chromium render, report jobs/retention, document retention) | `apps/worker/test/enterprise.test.ts` | vitest | compose Postgres (+ Chrome/Chromium for the render test, skipped if absent) |
 | **Browser end-to-end** (two-browser workflow with live updates, rating privacy via UI/BFF/API, deep links, password recovery, Arabic default + RTL/LTR switching, WebSocket reconnection after API restart, 390/820/1280 px layouts in AR+EN, PWA manifest/SW/offline, SW cache contents) | `apps/web/e2e/*.spec.ts` | Playwright (installed Chrome) | running compose stack |
 
 ```bash

@@ -1,5 +1,5 @@
 import { Global, Injectable, Module } from '@nestjs/common';
-import { OutboxEventType, type Prisma, type ScheduleSyncPayload, type TaskEventPayload } from '@dailytasks/database';
+import { OutboxEventType, type NotifyEventPayload, type Prisma, type ScheduleSyncPayload, type TaskEventPayload } from '@dailytasks/database';
 import type { Tx } from '../prisma/prisma.service';
 
 /**
@@ -18,6 +18,13 @@ export class OutboxService {
 
   taskEvent(tx: Tx, type: OutboxEventType, payload: TaskEventPayload, dedupeKey: string) {
     return this.enqueue(tx, type, payload.taskId, payload, dedupeKey);
+  }
+
+  /** Notification event with explicit recipients (decided in the transaction). No-op when nobody is addressed. */
+  notify(tx: Tx, type: OutboxEventType, aggregateId: string, payload: NotifyEventPayload, dedupeKey: string) {
+    const recipients = [...new Set(payload.recipients)].filter((r) => r && r !== payload.actorId);
+    if (recipients.length === 0) return Promise.resolve();
+    return this.enqueue(tx, type, aggregateId, { ...payload, recipients }, dedupeKey);
   }
 
   scheduleSync(tx: Tx, taskId: string, scheduleVersion: number) {

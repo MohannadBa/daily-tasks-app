@@ -3,6 +3,12 @@ import { api } from './api';
 
 // Mirrors packages/config (kept local so the browser bundle stays free of zod/server code).
 export const MAX_FILE_BYTES = 25 * 1024 * 1024;
+
+/**
+ * Image types shown as in-app thumbnails (server issues inline URLs only for these + PDF; HEIC is
+ * not renderable in most browsers, so it stays a download).
+ */
+export const IMAGE_PREVIEW_TYPES: readonly string[] = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 export const MIME_BY_EXT: Record<string, string> = {
   jpg: 'image/jpeg',
   jpeg: 'image/jpeg',
@@ -73,6 +79,31 @@ export async function uploadFiles(taskId: string, files: File[], onProgress?: Up
     out.push(await api.attachments.confirm(attachmentId));
   }
   return out;
+}
+
+/** Manual Documents Center upload: pre-signed PUT, then HeadObject-verified confirm. */
+export async function uploadDocument(
+  projectId: string,
+  f: File,
+  meta: { title: string; description?: string | null; categoryId: string; visibility: 'PROJECT_MEMBERS' | 'MANAGERS_ONLY' },
+  onProgress?: (fraction: number) => void,
+) {
+  const type = mimeFor(f.name);
+  if (!type) throw new Error('File type is not allowed');
+  const { documentId, uploadUrl, headers } = await api.documents.requestUpload(projectId, { ...meta, fileName: f.name, contentType: type, sizeBytes: f.size });
+  await putWithProgress(uploadUrl, headers, f, (p) => onProgress?.(p));
+  return api.documents.confirm(documentId);
+}
+
+/** Opens a short-lived pre-signed URL (issued only after the server's visibility check). */
+export async function openDocument(id: string) {
+  const { url } = await api.documents.downloadUrl(id);
+  window.open(url, '_blank', 'noopener,noreferrer');
+}
+
+export async function openReport(id: string) {
+  const { url } = await api.reports.downloadUrl(id);
+  window.open(url, '_blank', 'noopener,noreferrer');
 }
 
 export async function openAttachment(id: string) {

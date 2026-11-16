@@ -13,6 +13,8 @@ fi
 case "$1" in
   migrate)
     $PRISMA migrate deploy $SCHEMA
+    # Data step for the enterprise workflow (time ledger for pre-existing tasks). Idempotent.
+    node /app/packages/database/dist/backfill.js
     if [ "${SEED_DEMO_DATA:-false}" = "true" ]; then node /app/packages/database/dist/seed.js; fi
     exit 0
     ;;
@@ -20,5 +22,6 @@ esac
 
 if [ "${RUN_MIGRATIONS:-false}" = "true" ]; then
   $PRISMA migrate deploy $SCHEMA
+  node /app/packages/database/dist/backfill.js
 fi
 exec "$@"

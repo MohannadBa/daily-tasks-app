@@ -1,6 +1,6 @@
 # Al-Rasiyat · الراسيات — Task Management
 
-Arabic-first task management platform for Al-Rasiyat (repository/package name: `dailytasks`). One company: admins create projects and invite people, project managers assign tasks with deadlines and files, employees reply and complete tasks from their phone, and managers privately rate completed work.
+Arabic-first task management platform for Al-Rasiyat (repository/package name: `dailytasks`). Admins manage departments and accounts; project managers assign tasks by department and priority; employees work, transfer, request extensions and submit completion from their phone; only an approval completes a task. Accountable time is tracked by a server-side ledger (manager review pauses the clock; rejected review time is charged). Projects have a Documents Center fed automatically by approved deliverables, everyone has a private personal-task workspace, PDF reports are rendered in Arabic or English, and managers privately rate completed work.
 
 There is **no native mobile app**: one responsive Next.js web app serves desktop and phones, and installs to the iPhone/Android Home Screen as a PWA (see [docs/PWA.md](docs/PWA.md)).
 
@@ -68,6 +68,9 @@ pnpm cdk:synth       # synthesize AWS CloudFormation (no deployment)
 ```
 
 ## Documentation
+- [User guide](docs/USER_GUIDE.md) — what admins, managers and employees can do, screen by screen
+- [Time accounting & workflow](docs/TIME_ACCOUNTING.md) — approval, transfers, extensions, accountable time
+- [Enterprise API](docs/API_ENTERPRISE.md) — departments, workflow, documents, personal tasks, reports, accounts
 - [Architecture](docs/ARCHITECTURE.md) — components, flows, security model
 - [Database](docs/DATABASE.md) — schema design and constraints
 - [Testing](docs/TESTING.md) — test strategy and the critical scenarios

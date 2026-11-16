@@ -1,4 +1,6 @@
+import { existsSync, readFileSync } from 'node:fs';
 import { expect, type Browser, type BrowserContext, type Page } from '@playwright/test';
+import { authFile } from './global-setup';
 
 export const PASSWORD = process.env.SEED_DEMO_PASSWORD ?? 'Password123!';
 export const API = process.env.E2E_API_URL ?? 'http://localhost:3000/api/v1';
@@ -18,6 +20,7 @@ const sessions = new Map<string, StorageState>();
  * `locale` pins the UI language via the saved preference cookie.
  */
 export async function signIn(browser: Browser, email: string, locale: 'ar' | 'en' = 'en', viewport?: { width: number; height: number }): Promise<{ context: BrowserContext; page: Page }> {
+  if (!sessions.has(email) && existsSync(authFile(email))) sessions.set(email, JSON.parse(readFileSync(authFile(email), 'utf8')) as StorageState);
   const saved = sessions.get(email);
   const context = await browser.newContext({ ...(viewport ? { viewport } : {}), ...(saved ? { storageState: saved } : {}) });
   await context.addCookies([{ name: 'dt_locale', value: locale, url: 'http://localhost:3001' }]);
@@ -37,7 +40,30 @@ export async function signIn(browser: Browser, email: string, locale: 'ar' | 'en
 }
 
 /** Direct API token (for setup / authorization probes). */
+const tokens = new Map<string, { token: string; user: { id: string; managedProjectIds: string[] } }>();
 export async function apiToken(email: string): Promise<{ token: string; user: { id: string; managedProjectIds: string[] } }> {
+  // Cached per user: every login counts against the API's per-IP sign-in limit.
+  const hit = tokens.get(email);
+  if (hit) return hit;
+  // Reuse the session created by global setup: its httpOnly access cookie is the API bearer token.
+  if (existsSync(authFile(email))) {
+    const state = JSON.parse(readFileSync(authFile(email), 'utf8')) as StorageState;
+    const access = state.cookies.find((c) => c.name === 'dt_access')?.value;
+    if (access) {
+      const me = await fetch(`${API}/auth/me`, { headers: { Authorization: `Bearer ${access}` } });
+      if (me.ok) {
+        const fromSession = { token: access, user: (await me.json()) as { id: string; managedProjectIds: string[] } };
+        tokens.set(email, fromSession);
+        return fromSession;
+      }
+    }
+  }
+  const fresh = await loginForToken(email);
+  tokens.set(email, fresh);
+  return fresh;
+}
+
+async function loginForToken(email: string): Promise<{ token: string; user: { id: string; managedProjectIds: string[] } }> {
   const r = await fetch(`${API}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password: PASSWORD }) });
   const b = await r.json();
   return { token: b.accessToken, user: b.user };

@@ -1,4 +1,4 @@
-import { DeleteObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { AttachmentStatus, type PrismaClient } from '@dailytasks/database';
 import { errMsg, logger } from './logger';
 
@@ -7,6 +7,7 @@ export const ABANDONED_UPLOAD_AFTER_MS = 24 * 3600_000;
 
 export interface ObjectStore {
   delete(key: string): Promise<void>;
+  put(key: string, body: Buffer, contentType: string): Promise<void>;
 }
 
 export class S3ObjectStore implements ObjectStore {
@@ -18,6 +19,9 @@ export class S3ObjectStore implements ObjectStore {
     forcePathStyle = false,
   ) {
     this.s3 = new S3Client({ region, endpoint, forcePathStyle });
+  }
+  async put(key: string, body: Buffer, contentType: string) {
+    await this.s3.send(new PutObjectCommand({ Bucket: this.bucket, Key: key, Body: body, ContentType: contentType, ServerSideEncryption: 'AES256' }));
   }
   async delete(key: string) {
     // DeleteObject is idempotent: a key that was never uploaded is not an error.
@@ -45,6 +49,20 @@ export async function cleanupAbandonedUploads(prisma: PrismaClient, store: Objec
       removed += r.count;
     } catch (e) {
       logger.warn('abandoned upload cleanup failed', { attachmentId: a.id, error: errMsg(e) });
+    }
+  }
+  // Manual Documents Center uploads that were never confirmed.
+  const staleDocs = await prisma.projectDocument.findMany({
+    where: { status: AttachmentStatus.PENDING, source: 'MANUAL', createdAt: { lt: new Date(now.getTime() - ABANDONED_UPLOAD_AFTER_MS) } },
+    select: { id: true, storageKey: true },
+    take: 200,
+  });
+  for (const d of staleDocs) {
+    try {
+      if (d.storageKey) await store.delete(d.storageKey);
+      removed += (await prisma.projectDocument.deleteMany({ where: { id: d.id, status: AttachmentStatus.PENDING } })).count;
+    } catch (e) {
+      logger.warn('abandoned document cleanup failed', { documentId: d.id, error: errMsg(e) });
     }
   }
   if (removed) logger.info('removed abandoned uploads', { count: removed });

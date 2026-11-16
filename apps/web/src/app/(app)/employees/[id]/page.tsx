@@ -2,10 +2,10 @@
 import { useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
 import { useParams, useSearchParams } from 'next/navigation';
-import { Suspense, type ReactNode } from 'react';
+import { Suspense, useState, type ReactNode } from 'react';
 import { Stars } from '@/components/stars';
 import { TaskTable } from '@/components/task-table';
-import { Badge, Card, Empty, ErrorBox, PageHeader, SkeletonList, Spinner } from '@/components/ui';
+import { Badge, Card, Empty, ErrorBox, PageHeader, SkeletonList, Spinner, Tabs } from '@/components/ui';
 import { api } from '@/lib/api';
 import { formatDateTime } from '@/lib/format';
 import { useT } from '@/lib/i18n';
@@ -22,15 +22,24 @@ function Kpi({ label, children }: { label: string; children: ReactNode }) {
 function EmployeeDetail() {
   const { id } = useParams<{ id: string }>();
   const projectId = useSearchParams().get('projectId') ?? undefined;
-  const { t } = useT();
+  const { t, locale } = useT();
+  const [view, setView] = useState<'active' | 'pending_review' | 'completed'>('active');
   const q = useQuery({ queryKey: ['performance', 'employee', id, projectId], queryFn: () => api.performance.employee(id, projectId) });
-  const tasks = useQuery({ queryKey: ['tasks', 'assignee', id, projectId], queryFn: () => api.tasks.list({ assigneeId: id, projectId, view: 'active', pageSize: 50 }) });
+  const tasks = useQuery({ queryKey: ['tasks', 'assignee', id, projectId, view], queryFn: () => api.tasks.list({ assigneeId: id, projectId, view, pageSize: 50 }) });
   if (q.isLoading) return <Spinner />;
   if (!q.data) return <ErrorBox error={q.error ?? t('Not found')} />;
   const d = q.data;
   return (
     <>
-      <PageHeader title={d.employee.name} subtitle={<>{d.employee.email} · {t('ratings are private and never shown to the employee')}</>} />
+      <PageHeader
+        title={d.employee.name}
+        subtitle={
+          <>
+            {d.employee.email}
+            {d.departments.length > 0 && <> · {d.departments.map((x) => `${locale === 'ar' ? x.nameAr : x.nameEn}${x.isPrimary ? ` (${t('Primary')})` : ''}`).join('، ')}</>} · {t('ratings are private and never shown to the employee')}
+          </>
+        }
+      />
       <div className="mb-4 grid grid-cols-2 gap-3 sm:mb-6 sm:gap-4 lg:grid-cols-5">
         <Kpi label={t('Average rating')}>
           <span className="flex items-center gap-2">
@@ -44,8 +53,17 @@ function EmployeeDetail() {
         <Kpi label={t('Overdue')}>{d.overdueTaskCount}</Kpi>
       </div>
       <div className="mb-4 grid gap-4 sm:mb-6 sm:gap-6 lg:grid-cols-3">
-        <Card title={t('Open tasks ({n})', { n: tasks.data?.total ?? 0 })} className="lg:col-span-2">
-          {tasks.isLoading ? <SkeletonList rows={3} /> : <TaskTable tasks={tasks.data?.items ?? []} emptyText="No open tasks" />}
+        <Card title={t('Tasks ({n})', { n: tasks.data?.total ?? 0 })} className="lg:col-span-2">
+          <Tabs
+            value={view}
+            onChange={setView}
+            items={[
+              { value: 'active', label: t('Active') },
+              { value: 'pending_review', label: t('Pending approval') },
+              { value: 'completed', label: t('Completed') },
+            ]}
+          />
+          {tasks.isLoading ? <SkeletonList rows={3} /> : <TaskTable tasks={tasks.data?.items ?? []} emptyText="No tasks found" />}
         </Card>
         <Card title={t('Projects')}>
           {d.projects.length === 0 ? (

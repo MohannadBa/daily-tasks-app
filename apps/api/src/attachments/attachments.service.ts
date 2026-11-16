@@ -1,6 +1,6 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { ATTACHMENT_MAX_BYTES, PRESIGNED_DOWNLOAD_TTL_SECONDS, PRESIGNED_UPLOAD_TTL_SECONDS } from '@dailytasks/config';
+import { ATTACHMENT_MAX_BYTES, INLINE_PREVIEW_TYPES, PRESIGNED_DOWNLOAD_TTL_SECONDS, PRESIGNED_UPLOAD_TTL_SECONDS } from '@dailytasks/config';
 import { AttachmentStatus, OutboxEventType, TaskStatus, type TaskAttachment, type User } from '@dailytasks/database';
 import type { AttachmentDto, DownloadUrlResponse, UploadUrlResponse } from '@dailytasks/shared-types';
 import type { UploadRequestInput } from '@dailytasks/validation';
@@ -31,12 +31,14 @@ export class AttachmentsService {
 
   /** Step 1: validate and create a PENDING attachment with a random, non-guessable key. */
   async requestUpload(user: AuthUser, taskId: string, input: Required<UploadRequestInput>): Promise<UploadUrlResponse> {
-    const { task } = await this.access.taskAccess(user, taskId);
+    const { task, access } = await this.access.taskAccess(user, taskId);
     if (task.archivedAt) throw new BadRequestException('Task is archived');
     const storageKey = `tasks/${task.id}/${randomUUID()}`;
     const att = await this.prisma.taskAttachment.create({
       data: {
         taskId: task.id,
+        // Manager files are task instructions; worker files are linked to a comment/submission later.
+        kind: access === 'ADMIN' || access === 'MANAGER' ? 'INSTRUCTION' : 'COMMENT',
         uploadedById: user.id,
         fileName: input.fileName,
         contentType: input.contentType,
@@ -60,7 +62,7 @@ export class AttachmentsService {
       await this.prisma.$transaction(async (tx) => {
         await tx.taskAttachment.update({ where: { id: att.id }, data: { status: AttachmentStatus.UPLOADED, uploadedAt: new Date() } });
         // Manager instruction files are task-level; employee files are linked when they comment/complete.
-        if (access !== 'ASSIGNEE') {
+        if (access === 'ADMIN' || access === 'MANAGER') {
           await tx.taskHistory.create({ data: { taskId: task.id, actorId: user.id, action: 'ATTACHMENT_ADDED', metadata: { attachmentId: att.id, fileName: att.fileName } } });
           if (task.status !== TaskStatus.COMPLETED) {
             await this.outbox.taskEvent(
@@ -77,12 +79,14 @@ export class AttachmentsService {
     return toAttachmentDto(fresh);
   }
 
-  async downloadUrl(user: AuthUser, attachmentId: string): Promise<DownloadUrlResponse> {
+  async downloadUrl(user: AuthUser, attachmentId: string, preview = false): Promise<DownloadUrlResponse & { inline: boolean }> {
     const att = await this.prisma.taskAttachment.findUnique({ where: { id: attachmentId } });
     if (!att || att.status !== AttachmentStatus.UPLOADED) throw new NotFoundException('Attachment not found');
     await this.access.taskAccess(user, att.taskId); // 404 if the caller cannot see the task
-    const url = await this.storage.presignDownload(att.storageKey, att.fileName, PRESIGNED_DOWNLOAD_TTL_SECONDS);
-    return { url, expiresIn: PRESIGNED_DOWNLOAD_TTL_SECONDS };
+    // Inline only for safe, renderable types (images/PDF); never HTML/SVG/text.
+    const inline = preview && INLINE_PREVIEW_TYPES.includes(att.contentType);
+    const url = await this.storage.presignDownload(att.storageKey, att.fileName, PRESIGNED_DOWNLOAD_TTL_SECONDS, inline);
+    return { url, expiresIn: PRESIGNED_DOWNLOAD_TTL_SECONDS, inline };
   }
 
   /** All visible uploaded attachments of a task (task-level + linked to comments). */

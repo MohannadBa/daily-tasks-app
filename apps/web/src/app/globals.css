@@ -87,8 +87,10 @@ body {
   to { opacity: 1; transform: none; }
 }
 .dt-toast { animation: dt-toast-in 160ms ease-out; }
+/* Subtle entrance for cards, panels and dialogs. */
+.dt-fade-in { animation: dt-toast-in 220ms ease-out both; }
 @media (prefers-reduced-motion: reduce) {
-  .dt-skeleton, .dt-toast { animation: none; }
+  .dt-skeleton, .dt-toast, .dt-fade-in { animation: none; }
 }
 
 html {

@@ -1,5 +1,5 @@
 import { PUSH_MAX_ATTEMPTS, PUSH_MAX_CONSECUTIVE_FAILURES } from '@dailytasks/config';
-import { NotificationType, ProjectRole, PushDeliveryStatus, type PrismaClient, type Task } from '@dailytasks/database';
+import { NotificationType, PushDeliveryStatus, type PrismaClient, type Task } from '@dailytasks/database';
 import { REALTIME_CHANNEL, taskPath, type PushPayload, type RealtimeEnvelope } from '@dailytasks/shared-types';
 import { errMsg, logger } from './logger';
 import { fmtHours, render } from './messages';
@@ -14,7 +14,10 @@ export interface NotifyRequest {
   actorId?: string | null;
   /** Stable key for this logical event; (userId, dedupeKey) is unique in the DB. */
   dedupeKey: string;
-  vars?: { actorName?: string; offsetMinutes?: number };
+  vars?: { actorName?: string; offsetMinutes?: number; reason?: string; minutes?: number; name?: string };
+  /** In-app link when the notification is not about a task (documents, users, reports). */
+  url?: string;
+  projectId?: string;
   /** Per-recipient variation (e.g. previous assignee on reassignment). */
   reassignedAwayUserId?: string;
 }
@@ -54,7 +57,7 @@ export class Notifier {
     if (ids.size === 0) return 0;
 
     const users = await this.prisma.user.findMany({ where: { id: { in: [...ids] }, isActive: true }, select: { id: true, locale: true } });
-    const url = req.task ? taskPath(req.task.id) : '/settings/notifications';
+    const url = req.task ? taskPath(req.task.id) : (req.url ?? '/settings/notifications');
     await this.prisma.notification.createMany({
       data: users.map((u) => {
         const { title, body } = render(req.type, u.locale, {
@@ -63,6 +66,9 @@ export class Notifier {
           actor: req.vars?.actorName,
           hours: req.vars?.offsetMinutes ? fmtHours(req.vars.offsetMinutes, u.locale === 'ar' ? 'ar' : 'en') : undefined,
           reassignedAway: req.reassignedAwayUserId === u.id,
+          reason: req.vars?.reason,
+          minutes: req.vars?.minutes,
+          name: req.vars?.name,
         });
         return {
           userId: u.id,
@@ -70,7 +76,7 @@ export class Notifier {
           title,
           body,
           taskId: req.task?.id ?? null,
-          projectId: req.task?.projectId ?? null,
+          projectId: req.task?.projectId ?? req.projectId ?? null,
           dedupeKey: req.dedupeKey,
           data: { url },
         };
@@ -82,7 +88,7 @@ export class Notifier {
       kind: 'notification',
       type: req.type,
       taskId: req.task?.id,
-      projectId: req.task?.projectId,
+      projectId: req.task?.projectId ?? req.projectId,
     });
     return this.deliver(req.dedupeKey, users.map((u) => u.id));
   }
@@ -129,7 +135,7 @@ export class Notifier {
         type: n.type,
         title: n.title,
         body: n.body,
-        url: n.taskId ? taskPath(n.taskId) : '/settings/notifications',
+        url: n.taskId ? taskPath(n.taskId) : (((n.data as { url?: string } | null)?.url) ?? '/settings/notifications'),
         taskId: n.taskId ?? undefined,
         badgeCount: badge.get(n.userId),
         tag: `n-${n.id}`,
@@ -205,13 +211,13 @@ export class Notifier {
     return pending.length;
   }
 
-  /** Active managers of a project. */
-  async projectManagers(projectId: string): Promise<string[]> {
-    const rows = await this.prisma.projectMembership.findMany({
-      where: { projectId, role: ProjectRole.MANAGER, removedAt: null, user: { isActive: true } },
-      select: { userId: true },
-    });
-    return rows.map((r) => r.userId);
+  /**
+   * The people managing a task — its creator and its approver (active accounts only). Other managers
+   * of the same project are never notified about tasks they cannot see.
+   */
+  async taskManagers(task: Pick<Task, 'createdById' | 'approverId'>): Promise<string[]> {
+    const users = await this.prisma.user.findMany({ where: { id: { in: [task.createdById, task.approverId] }, isActive: true }, select: { id: true } });
+    return users.map((u) => u.id);
   }
 
   /** The assignee, only if still an active member of the project. */

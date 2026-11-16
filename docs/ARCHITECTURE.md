@@ -36,7 +36,7 @@
 ## Authorization (`AccessService`)
 | Role | Access |
 |---|---|
-| COMPANY_ADMIN | everything in the company; manage users/projects/settings; may rate |
+| ADMIN | everything in the company; manage users/projects/settings; may rate |
 | Project MANAGER (membership) | their projects, all tasks in them, members, ratings for those projects |
 | Project EMPLOYEE (membership) | the project, **only tasks assigned to them** |
 

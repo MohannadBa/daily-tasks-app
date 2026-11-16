@@ -68,6 +68,21 @@ export class TokenService implements OnModuleInit {
     return { accessToken, refreshToken, expiresIn: this.env.JWT_ACCESS_TTL_SECONDS };
   }
 
+  /** Short-lived challenge proving the password was correct while a change is required (local mode). */
+  issuePasswordChallenge(userId: string): string {
+    return jwt.sign({ typ: 'pwchange' }, this.env.JWT_SECRET!, { algorithm: 'HS256', subject: userId, issuer: ISSUER, expiresIn: 600 });
+  }
+
+  verifyPasswordChallenge(token: string): string {
+    try {
+      const payload = jwt.verify(token, this.env.JWT_SECRET!, { algorithms: ['HS256'], issuer: ISSUER }) as jwt.JwtPayload;
+      if (payload.typ !== 'pwchange' || !payload.sub) throw new Error('wrong token type');
+      return payload.sub;
+    } catch {
+      throw new UnauthorizedException('Invalid or expired session');
+    }
+  }
+
   verifyLocalRefreshToken(token: string): string {
     try {
       const payload = jwt.verify(token, this.env.JWT_SECRET!, { algorithms: ['HS256'], issuer: ISSUER }) as jwt.JwtPayload;

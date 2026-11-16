@@ -169,6 +169,8 @@ export class AppStack extends Stack {
       ],
       lifecycleRules: [
         { abortIncompleteMultipartUploadAfter: Duration.days(1) },
+        // Generated PDF reports are short-lived (the worker also deletes them after REPORT_RETENTION_DAYS).
+        { id: 'expire-reports', prefix: 'reports/', expiration: Duration.days(8) },
         ...(isProd ? [{ noncurrentVersionExpiration: Duration.days(90) }] : []),
       ],
     });
@@ -292,6 +294,15 @@ export class AppStack extends Stack {
       SQS_EVENTS_QUEUE_URL: queue.queueUrl,
     };
 
+    // Personal-task field encryption key (AES-256-GCM, D-12). Generated once and RETAINED: losing it
+    // makes existing personal tasks unreadable. Injected into the API only.
+    const personalDataKey = new secretsmanager.Secret(this, 'PersonalDataKey', {
+      secretName: `${prefix}/personal-data-key`,
+      description: 'Encryption key for personal task content (API only). Never rotate without re-encrypting.',
+      generateSecretString: { passwordLength: 64, excludePunctuation: true },
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+
     const taskDef = (name: string, size: ServiceSize) =>
       new ecs.FargateTaskDefinition(this, `${name}TaskDef`, {
         cpu: size.cpu,
@@ -317,7 +328,7 @@ export class AppStack extends Stack {
         RUN_MIGRATIONS: 'false', // migrations run as a one-off task (see docs/DEPLOYMENT.md)
         ...vapidPublic,
       },
-      secrets: dbSecrets,
+      secrets: { ...dbSecrets, PERSONAL_DATA_KEY: ecs.Secret.fromSecretsManager(personalDataKey) },
       healthCheck: {
         command: ['CMD-SHELL', "node -e \"fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""],
         interval: Duration.seconds(15),
@@ -328,7 +339,15 @@ export class AppStack extends Stack {
     bucket.grantReadWrite(apiTd.taskRole);
     apiTd.taskRole.addToPrincipalPolicy(
       new iam.PolicyStatement({
-        actions: ['cognito-idp:AdminCreateUser', 'cognito-idp:AdminDisableUser', 'cognito-idp:AdminEnableUser', 'cognito-idp:AdminResetUserPassword'],
+        // Admin provisioning: create, enable/disable, reset, set temporary password, revoke sessions.
+        actions: [
+          'cognito-idp:AdminCreateUser',
+          'cognito-idp:AdminDisableUser',
+          'cognito-idp:AdminEnableUser',
+          'cognito-idp:AdminResetUserPassword',
+          'cognito-idp:AdminSetUserPassword',
+          'cognito-idp:AdminUserGlobalSignOut',
+        ],
         resources: [userPool.userPoolArn],
       }),
     );
@@ -387,8 +406,10 @@ export class AppStack extends Stack {
       },
       stopTimeout: Duration.seconds(30),
     });
-    // Worker removes abandoned (never confirmed) uploads.
+    // Worker removes abandoned (never confirmed) uploads and expired reports.
     bucket.grantDelete(workerTd.taskRole);
+    // Worker writes rendered PDF reports (reports/ prefix only).
+    bucket.grantPut(workerTd.taskRole, 'reports/*');
     queue.grantConsumeMessages(workerTd.taskRole);
     queue.grantSendMessages(workerTd.taskRole);
     workerTd.taskRole.addToPrincipalPolicy(

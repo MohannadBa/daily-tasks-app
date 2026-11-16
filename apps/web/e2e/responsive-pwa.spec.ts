@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { expectNoHorizontalOverflow, signIn, USERS } from './helpers';
 
-const PAGES = ['/', '/tasks', '/projects', '/notifications', '/settings', '/settings/notifications', '/employees'];
+const PAGES = ['/', '/tasks', '/projects', '/notifications', '/settings', '/settings/notifications', '/employees', '/reviews', '/transfers', '/personal', '/documents', '/reports'];
 
 test.describe('responsive layout', () => {
   for (const locale of ['ar', 'en'] as const) {

@@ -26,7 +26,7 @@ describe('platform features', () => {
   });
 
   const mkTask = (title: string, deadline: string, assigneeId = w.emp1.id) =>
-    api(ctx, w.managerA.id).post('/tasks', { projectId: w.projectA.id, assigneeId, title, deadline }).expect(201).then((r) => r.body);
+    api(ctx, w.managerA.id).post('/tasks', { projectId: w.projectA.id, departmentId: w.dept.id, assigneeId, title, deadline }).expect(201).then((r) => r.body);
 
   describe('dashboard', () => {
     it('counts tasks due within 24 h and shows recent activity scoped to the caller', async () => {
@@ -82,14 +82,25 @@ describe('platform features', () => {
       expect((await api(ctx).post('/auth/reset-password', { email: w.emp1.email, code: '12', newPassword: 'Weakpass1' })).status).toBe(400);
     });
 
-    it('admin can reset a password (local mode: temporary password); others cannot', async () => {
+    it('admin can reset a password (local mode: temporary password, change forced at next sign-in); others cannot', async () => {
       const target = await ctx.prisma.user.create({ data: { companyId: w.company.id, email: `reset-${Date.now()}@test.local`, name: 'Reset Me', role: 'EMPLOYEE' } });
       expect((await api(ctx, w.managerA.id).post(`/users/${target.id}/reset-password`, { temporaryPassword: 'Temp12345' })).status).toBe(403);
-      expect((await api(ctx, w.admin.id).post(`/users/${target.id}/reset-password`, {})).status).toBe(400);
+      // Admin-chosen temporary password is never echoed back.
       const r = await api(ctx, w.admin.id).post(`/users/${target.id}/reset-password`, { temporaryPassword: 'Temp12345' }).expect(200);
       expect(r.body).toEqual({ mode: 'temporary' });
       const login = await api(ctx).post('/auth/login', { email: target.email, password: 'Temp12345' });
       expect(login.status).toBe(200);
+      expect(login.body.status).toBe('NEW_PASSWORD_REQUIRED');
+      expect(login.body.accessToken).toBeUndefined();
+      const done = await api(ctx).post('/auth/new-password', { email: target.email, session: login.body.session, newPassword: 'Brandnew123' }).expect(200);
+      expect(done.body.status).toBe('OK');
+      expect(done.body.accessToken).toBeTruthy();
+      // Default (no password given): generated, shown exactly once.
+      const gen = await api(ctx, w.admin.id).post(`/users/${target.id}/reset-password`, {}).expect(200);
+      expect(gen.body.temporaryPassword).toMatch(/^[A-Za-z2-9]{16}$/);
+      const row = await ctx.prisma.user.findUniqueOrThrow({ where: { id: target.id } });
+      expect(row.passwordHash).not.toContain(gen.body.temporaryPassword);
+      expect(row.mustChangePassword).toBe(true);
     });
   });
 

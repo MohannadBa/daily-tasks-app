@@ -33,9 +33,11 @@ RUN cd packages/database && npx prisma generate
 
 # ---- runtime ----
 FROM node:22-bookworm-slim AS runtime
-RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates tini \
+# Debian Chromium renders PDF reports (playwright-core drives it; no browser download at runtime).
+# Arabic fonts are embedded in the report HTML; fonts-noto-core is a system fallback.
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates tini chromium fonts-noto-core \
   && rm -rf /var/lib/apt/lists/*
-ENV NODE_ENV=production
+ENV NODE_ENV=production CHROMIUM_PATH=/usr/bin/chromium
 WORKDIR /app
 COPY --from=prod-deps --chown=node:node /app ./
 COPY --from=build --chown=node:node /app/packages/config/dist packages/config/dist
@@ -43,6 +45,7 @@ COPY --from=build --chown=node:node /app/packages/database/dist packages/databas
 COPY --from=build --chown=node:node /app/packages/shared-types/dist packages/shared-types/dist
 
 COPY --from=build --chown=node:node /app/apps/worker/dist apps/worker/dist
+COPY --chown=node:node apps/worker/assets apps/worker/assets
 USER node
 EXPOSE 3002
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \

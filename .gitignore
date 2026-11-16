@@ -13,3 +13,6 @@ cdk.out/
 cdk.context.json
 test-results/
 playwright-report/
+
+# Playwright saved sessions (local test credentials)
+apps/web/e2e/.auth/

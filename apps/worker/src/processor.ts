@@ -1,8 +1,12 @@
 import {
+  accountableFromDenormalized,
+  NOTIFY_EVENT_TYPES,
   NotificationType,
   OutboxEventType,
   TaskStatus,
   type DeadlineDuePayload,
+  type NotifyEventPayload,
+  type ReportRenderPayload,
   type PrismaClient,
   type PushTestPayload,
   type QueueMessage,
@@ -25,10 +29,17 @@ export class EventProcessor {
     private readonly prisma: PrismaClient,
     private readonly notifier: Notifier,
     private readonly scheduler: DeadlineScheduler,
+    /** Renders a queued PDF report (absent when REPORTS_ENABLED=false). */
+    private readonly renderReport?: (reportId: string) => Promise<void>,
   ) {}
 
   async handle(msg: QueueMessage): Promise<void> {
+    if ((NOTIFY_EVENT_TYPES as readonly string[]).includes(msg.type)) return this.notifyEvent(msg.type as NotificationType, msg.payload as NotifyEventPayload, msg.dedupeKey);
     switch (msg.type) {
+      case OutboxEventType.REPORT_RENDER: {
+        if (!this.renderReport) return logger.warn('report rendering disabled; dropping', { dedupeKey: msg.dedupeKey });
+        return this.renderReport((msg.payload as ReportRenderPayload).reportId);
+      }
       case OutboxEventType.TASK_SCHEDULE_SYNC:
         return this.scheduleSync(msg.payload as ScheduleSyncPayload);
       case OutboxEventType.TASK_DEADLINE_DUE:
@@ -49,6 +60,28 @@ export class EventProcessor {
       default:
         logger.warn('unknown message type; dropping', { type: msg.type });
     }
+  }
+
+  /**
+   * Workflow notifications with explicit recipients decided in the API transaction
+   * (approver, delegator, submitter …). Inactive users are skipped by the notifier.
+   */
+  private async notifyEvent(type: NotificationType, p: NotifyEventPayload, dedupeKey: string) {
+    const task = p.taskId ? await this.loadTask(p.taskId) : null;
+    if (p.taskId && !task) return logger.warn('task not found for event', { type, taskId: p.taskId });
+    const actor = p.actorId ? await this.prisma.user.findUnique({ where: { id: p.actorId }, select: { name: true } }) : null;
+    let projectName: string | undefined;
+    if (!task && p.projectId) projectName = (await this.prisma.project.findUnique({ where: { id: p.projectId }, select: { name: true } }))?.name;
+    await this.notifier.notify({
+      type,
+      task: task ?? undefined,
+      recipients: p.recipients,
+      actorId: p.actorId,
+      dedupeKey,
+      url: p.url,
+      projectId: p.projectId,
+      vars: { actorName: actor?.name, reason: p.vars?.reason, minutes: p.vars?.minutes, name: p.vars?.name ?? projectName },
+    });
   }
 
   private loadTask(taskId: string) {
@@ -78,12 +111,12 @@ export class EventProcessor {
       case OutboxEventType.TASK_COMMENT_ADDED: {
         // Employee replies go to the project's managers; manager replies go to the assignee.
         const byAssignee = p.details?.byAssignee === true;
-        const recipients = byAssignee ? await this.notifier.projectManagers(task.projectId) : await this.notifier.activeAssignee(task);
+        const recipients = byAssignee ? await this.notifier.taskManagers(task) : await this.notifier.activeAssignee(task);
         await this.notifier.notify({ ...base, type: NotificationType.TASK_COMMENT_ADDED, recipients });
         break;
       }
       case OutboxEventType.TASK_COMPLETED:
-        await this.notifier.notify({ ...base, type: NotificationType.TASK_COMPLETED, recipients: await this.notifier.projectManagers(task.projectId) });
+        await this.notifier.notify({ ...base, type: NotificationType.TASK_COMPLETED, recipients: await this.notifier.taskManagers(task) });
         break;
       case OutboxEventType.TASK_REOPENED:
         await this.notifier.notify({ ...base, type: NotificationType.TASK_REOPENED, recipients: await this.notifier.activeAssignee(task) });
@@ -99,16 +132,18 @@ export class EventProcessor {
       logger.debug('stale schedule sync ignored', { taskId: p.taskId, version: p.scheduleVersion, current: task.scheduleVersion });
       return;
     }
-    const open = task.status !== TaskStatus.COMPLETED && !task.archivedAt;
-    const jobs = open ? computeDeadlineJobs(task, task.project.company.reminderOffsetsMinutes) : [];
+    // Reminders/overdue follow the accountable clock: effectiveDueAt is when accountable time reaches
+    // the budget if the clock keeps running. Paused (pending review) or completed tasks get no jobs.
+    const open = task.status !== TaskStatus.COMPLETED && !task.archivedAt && !!task.effectiveDueAt;
+    const jobs = open ? computeDeadlineJobs({ id: task.id, deadline: task.effectiveDueAt!, scheduleVersion: task.scheduleVersion }, task.project.company.reminderOffsetsMinutes) : [];
     await this.scheduler.replace(task.id, jobs);
   }
 
   /**
    * Fired at reminder/deadline time. Re-verifies the database:
-   *  - schedule version must match (deadline not changed since),
-   *  - task must still be open (a task completed before its deadline is never reported overdue),
-   *  - for OVERDUE, the deadline must really have passed.
+   *  - schedule version must match (no ledger/deadline change since),
+   *  - task must still be open (a task completed or approved before its deadline is never overdue),
+   *  - for OVERDUE, accountable time must really exceed the budget (time-ledger rule).
    */
   private async deadlineDue(p: DeadlineDuePayload, dedupeKey: string) {
     const task = await this.loadTask(p.taskId);
@@ -117,12 +152,17 @@ export class EventProcessor {
     if (task.scheduleVersion !== p.scheduleVersion) return logger.debug('stale deadline event ignored', { taskId: p.taskId });
     if (task.status === TaskStatus.COMPLETED || task.archivedAt) return;
 
+    if (!task.clockRunningSince) return; // paused (pending manager review): never reported meanwhile
+    const accountable = accountableFromDenormalized(Number(task.chargedMs), task.clockRunningSince, new Date(now));
+    const budget = Number(task.budgetMs);
+
     if (p.kind === 'OVERDUE') {
-      if (task.deadline.getTime() > now + EARLY_FIRE_TOLERANCE_MS) return;
-      const recipients = [...(await this.notifier.activeAssignee(task)), ...(await this.notifier.projectManagers(task.projectId))];
-      await this.notifier.notify({ type: NotificationType.TASK_OVERDUE, task, recipients, dedupeKey });
+      if (accountable + EARLY_FIRE_TOLERANCE_MS <= budget) return;
+      const recipients = [...(await this.notifier.activeAssignee(task)), ...(await this.notifier.taskManagers(task))];
+      // One overdue alert per work cycle, even if the clock pauses and resumes (new schedule versions).
+      await this.notifier.notify({ type: NotificationType.TASK_OVERDUE, task, recipients, dedupeKey: `TASK_OVERDUE:${task.id}:c${task.currentCycle}` });
     } else {
-      if (task.deadline.getTime() <= now) return; // already overdue, reminder pointless
+      if (accountable >= budget) return; // already overdue, reminder pointless
       await this.notifier.notify({
         type: NotificationType.TASK_DEADLINE_APPROACHING,
         task,

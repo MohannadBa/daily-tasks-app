@@ -4,7 +4,8 @@
  */
 
 export const UserRole = {
-  COMPANY_ADMIN: 'COMPANY_ADMIN',
+  /** Company administrator (formerly ADMIN). */
+  ADMIN: 'ADMIN',
   PROJECT_MANAGER: 'PROJECT_MANAGER',
   EMPLOYEE: 'EMPLOYEE',
 } as const;
@@ -19,6 +20,9 @@ export type ProjectRole = (typeof ProjectRole)[keyof typeof ProjectRole];
 export const TaskStatus = {
   ASSIGNED: 'ASSIGNED',
   IN_PROGRESS: 'IN_PROGRESS',
+  /** A completion submission awaits review (delegator or approving manager). */
+  PENDING_REVIEW: 'PENDING_REVIEW',
+  /** Approved by the task approver. */
   COMPLETED: 'COMPLETED',
 } as const;
 export type TaskStatus = (typeof TaskStatus)[keyof typeof TaskStatus];
@@ -39,6 +43,20 @@ export const NotificationType = {
   TASK_DEADLINE_APPROACHING: 'TASK_DEADLINE_APPROACHING',
   TASK_REOPENED: 'TASK_REOPENED',
   PUSH_TEST: 'PUSH_TEST',
+  TASK_SUBMITTED: 'TASK_SUBMITTED',
+  TASK_SUBMISSION_FORWARDED: 'TASK_SUBMISSION_FORWARDED',
+  TASK_APPROVED: 'TASK_APPROVED',
+  TASK_REJECTED: 'TASK_REJECTED',
+  TASK_RETURNED: 'TASK_RETURNED',
+  TASK_TRANSFER_REQUESTED: 'TASK_TRANSFER_REQUESTED',
+  TASK_TRANSFER_ACCEPTED: 'TASK_TRANSFER_ACCEPTED',
+  TASK_TRANSFER_DECLINED: 'TASK_TRANSFER_DECLINED',
+  TASK_EXTENSION_REQUESTED: 'TASK_EXTENSION_REQUESTED',
+  TASK_EXTENSION_DECIDED: 'TASK_EXTENSION_DECIDED',
+  DOCUMENT_REGISTERED: 'DOCUMENT_REGISTERED',
+  USER_CREATED: 'USER_CREATED',
+  PASSWORD_CHANGE_REQUIRED: 'PASSWORD_CHANGE_REQUIRED',
+  REPORT_READY: 'REPORT_READY',
 } as const;
 export type NotificationType = (typeof NotificationType)[keyof typeof NotificationType];
 
@@ -52,6 +70,23 @@ export const TaskHistoryAction = {
   ATTACHMENT_ADDED: 'ATTACHMENT_ADDED',
   COMPLETED: 'COMPLETED',
   REOPENED: 'REOPENED',
+  PRIORITY_CHANGED: 'PRIORITY_CHANGED',
+  DEPARTMENT_CHANGED: 'DEPARTMENT_CHANGED',
+  SUBMITTED: 'SUBMITTED',
+  FORWARDED: 'FORWARDED',
+  APPROVED: 'APPROVED',
+  REJECTED: 'REJECTED',
+  RETURNED: 'RETURNED',
+  SUBMISSION_WITHDRAWN: 'SUBMISSION_WITHDRAWN',
+  TRANSFER_REQUESTED: 'TRANSFER_REQUESTED',
+  TRANSFER_ACCEPTED: 'TRANSFER_ACCEPTED',
+  TRANSFER_DECLINED: 'TRANSFER_DECLINED',
+  TRANSFER_CANCELLED: 'TRANSFER_CANCELLED',
+  EXTENSION_REQUESTED: 'EXTENSION_REQUESTED',
+  EXTENSION_DECIDED: 'EXTENSION_DECIDED',
+  EXTENSION_CANCELLED: 'EXTENSION_CANCELLED',
+  APPROVER_CHANGED: 'APPROVER_CHANGED',
+  DOCUMENT_REGISTERED: 'DOCUMENT_REGISTERED',
 } as const;
 export type TaskHistoryAction = (typeof TaskHistoryAction)[keyof typeof TaskHistoryAction];
 
@@ -59,8 +94,18 @@ export type PushPlatform = 'IOS' | 'ANDROID' | 'DESKTOP' | 'OTHER';
 export type PushDeliveryStatus = 'PENDING' | 'SENT' | 'FAILED' | 'EXPIRED';
 export type Locale = 'en' | 'ar';
 
+export const TaskPriority = { LOW: 'LOW', MEDIUM: 'MEDIUM', HIGH: 'HIGH', URGENT: 'URGENT' } as const;
+export type TaskPriority = (typeof TaskPriority)[keyof typeof TaskPriority];
+export type ReviewStage = 'DELEGATOR' | 'MANAGER';
+export type SubmissionStatus = 'PENDING' | 'FORWARDED' | 'APPROVED' | 'REJECTED' | 'RETURNED' | 'WITHDRAWN';
+export type TransferStatus = 'PENDING' | 'ACCEPTED' | 'DECLINED' | 'CANCELLED';
+export type ExtensionStatus = 'PENDING' | 'APPROVED' | 'PARTIALLY_APPROVED' | 'REJECTED' | 'CANCELLED';
+export type SegmentKind = 'ACTIVE_WORK' | 'TRANSFER_PENDING' | 'DELEGATOR_REVIEW' | 'PENDING_REVIEW' | 'APPROVED_REVIEW' | 'REJECTED_REVIEW';
+export type DocumentSource = 'TASK_SUBMISSION' | 'MANUAL';
+export type DocumentVisibility = 'PROJECT_MEMBERS' | 'MANAGERS_ONLY';
+
 /** Task "views" supported by GET /tasks?view=... */
-export type TaskView = 'all' | 'active' | 'completed' | 'overdue' | 'awaiting_rating';
+export type TaskView = 'all' | 'active' | 'completed' | 'overdue' | 'awaiting_rating' | 'pending_review' | 'to_review' | 'rejected';
 
 export interface UserSummary {
   id: string;
@@ -77,6 +122,10 @@ export interface CurrentUser extends UserSummary {
   managedProjectIds: string[];
   /** Project ids where the user is an active EMPLOYEE member. */
   employeeProjectIds: string[];
+  /** Departments the user belongs to. */
+  departments: Array<{ id: string; nameAr: string; nameEn: string; isPrimary: boolean }>;
+  /** True until the user replaced the temporary password (all other routes answer 403). */
+  mustChangePassword: boolean;
 }
 
 export interface AuthTokens {
@@ -93,6 +142,37 @@ export interface UserDto extends UserSummary {
   role: UserRole;
   locale: Locale;
   isActive: boolean;
+  createdAt: string;
+  departments?: Array<{ id: string; nameAr: string; nameEn: string; isPrimary: boolean }>;
+  mustChangePassword?: boolean;
+}
+
+export interface CreatedUserDto extends UserDto {
+  /** Present only once, in the create/reset response, when passwordDelivery = SHOW_ONCE. */
+  temporaryPassword?: string;
+}
+
+export interface DepartmentDto {
+  id: string;
+  code: string;
+  nameAr: string;
+  nameEn: string;
+  isActive: boolean;
+  sortOrder: number;
+  memberCount: number;
+}
+
+export interface DepartmentMemberDto extends UserSummary {
+  role: UserRole;
+  isPrimary: boolean;
+  isActive: boolean;
+}
+
+export interface AuditEntryDto {
+  id: string;
+  action: string;
+  actor: UserSummary | null;
+  metadata: Record<string, unknown>;
   createdAt: string;
 }
 
@@ -158,6 +238,26 @@ export interface TaskDto {
   rating?: { stars: number; ratedAt: string; needsReview: boolean } | null;
   createdAt: string;
   updatedAt: string;
+  department: { id: string; nameAr: string; nameEn: string } | null;
+  priority: TaskPriority;
+  approver: UserSummary;
+  /** First assignment deadline (never changed). `deadline` is the current approved deadline. */
+  originalDeadline: string;
+  currentCycle: number;
+  /** Time accounting for the current cycle (server-computed at response time). */
+  time: TaskTimeDto;
+  pending: { submissionId: string | null; transferId: string | null; extensionId: string | null };
+}
+
+export interface TaskTimeDto {
+  budgetMs: number;
+  accountableMs: number;
+  overdue: boolean;
+  overdueMs: number;
+  /** Clock paused (awaiting the approver's decision, or completed). */
+  paused: boolean;
+  /** When the task becomes overdue if the clock keeps running; null while paused. */
+  effectiveDueAt: string | null;
 }
 
 export interface TaskDetailDto extends TaskDto {
@@ -166,11 +266,176 @@ export interface TaskDetailDto extends TaskDto {
   permissions: {
     canEdit: boolean;
     canComment: boolean;
+    /** Legacy alias of canSubmit. */
     canComplete: boolean;
+    canSubmit: boolean;
     canStart: boolean;
     canReopen: boolean;
     canRate: boolean;
+    canReassign: boolean;
+    canChangeApprover: boolean;
+    /** Delegator deciding on a delegate's submission (forward/return). */
+    canReviewAsDelegator: boolean;
+    /** Approver deciding on a manager-stage submission. */
+    canApprove: boolean;
+    canWithdraw: boolean;
+    canTransfer: boolean;
+    canRespondTransfer: boolean;
+    canCancelTransfer: boolean;
+    canRequestExtension: boolean;
+    canDecideExtension: boolean;
+    canCancelExtension: boolean;
   };
+  pendingSubmission: SubmissionDto | null;
+  pendingTransfer: TransferDto | null;
+  pendingExtension: ExtensionDto | null;
+}
+
+export interface SubmissionDto {
+  id: string;
+  cycleNo: number;
+  stage: ReviewStage;
+  status: SubmissionStatus;
+  submittedBy: UserSummary;
+  reviewer: UserSummary;
+  comment: TaskCommentDto;
+  forwardedFromId: string | null;
+  decidedBy: UserSummary | null;
+  decidedAt: string | null;
+  decisionReason: string | null;
+  decidedAsAdmin: boolean;
+  createdAt: string;
+}
+
+export interface TransferDto {
+  task: { id: string; title: string; projectName: string };
+  id: string;
+  cycleNo: number;
+  from: UserSummary;
+  to: UserSummary;
+  reason: string;
+  status: TransferStatus;
+  depth: number;
+  requestedAt: string;
+  respondedAt: string | null;
+  responseNote: string | null;
+  closedAt: string | null;
+}
+
+export interface ExtensionDto {
+  id: string;
+  cycleNo: number;
+  requestedBy: UserSummary;
+  reason: string;
+  requestedMinutes: number;
+  status: ExtensionStatus;
+  grantedMinutes: number | null;
+  previousDeadline: string;
+  newDeadline: string | null;
+  decidedBy: UserSummary | null;
+  decidedAt: string | null;
+  decisionNote: string | null;
+  createdAt: string;
+}
+
+export interface TimeSegmentDto {
+  kind: SegmentKind;
+  startedAt: string;
+  endedAt: string | null;
+  charged: boolean;
+  chargedTo: UserSummary | null;
+  responsible: UserSummary | null;
+  durationMs: number;
+}
+
+export interface TaskTimeLedgerDto {
+  taskId: string;
+  cycles: Array<{
+    cycleNo: number;
+    startedAt: string;
+    originalDeadline: string;
+    approvedDeadline: string;
+    budgetMs: number;
+    accountableMs: number;
+    overdue: boolean;
+    overdueMs: number;
+    completedAt: string | null;
+    completedLate: boolean | null;
+    source: string;
+    segments: TimeSegmentDto[];
+    perEmployee: Array<{ user: UserSummary; chargedMs: number; lateMs: number }>;
+    /** Server-computed durations per segment kind (the client never derives business time). */
+    totals: {
+      activeWorkMs: number;
+      transferPendingMs: number;
+      delegatorReviewMs: number;
+      /** Manager review still open (excluded while pending). */
+      pendingReviewMs: number;
+      approvedReviewMs: number;
+      rejectedReviewMs: number;
+      /** Start of cycle → approval (wall clock), when completed. */
+      completionMs: number | null;
+    };
+    /** true while a manager decision is pending: overdue figures may still change (rejection charges the wait). */
+    provisional: boolean;
+  }>;
+}
+
+/** Completion review inbox row: a pending submission addressed to the caller. */
+export interface ReviewItemDto {
+  submission: SubmissionDto;
+  task: TaskDto;
+}
+
+export interface DocumentCategoryDto {
+  id: string;
+  code: string;
+  nameAr: string;
+  nameEn: string;
+}
+
+export interface ProjectDocumentDto {
+  id: string;
+  projectId: string;
+  title: string;
+  description: string | null;
+  category: DocumentCategoryDto;
+  source: DocumentSource;
+  visibility: DocumentVisibility;
+  fileName: string;
+  contentType: string;
+  sizeBytes: number;
+  uploadedBy: UserSummary;
+  task: { id: string; title: string } | null;
+  submissionId: string | null;
+  department: { id: string; nameAr: string; nameEn: string } | null;
+  createdAt: string;
+}
+
+export interface PersonalTaskDto {
+  id: string;
+  title: string;
+  notes: string | null;
+  dueAt: string | null;
+  priority: TaskPriority;
+  status: 'OPEN' | 'DONE';
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReportJobDto {
+  id: string;
+  type: 'TASK' | 'EMPLOYEE' | 'PROJECTS';
+  status: 'QUEUED' | 'RENDERING' | 'READY' | 'FAILED';
+  params: Record<string, unknown>;
+  includesRatings: boolean;
+  locale: Locale;
+  sizeBytes: number | null;
+  error: string | null;
+  createdAt: string;
+  completedAt: string | null;
+  expiresAt: string;
 }
 
 export interface TaskHistoryDto {
@@ -237,6 +502,7 @@ export interface EmployeePerformanceDetailDto extends EmployeePerformanceSummary
   history: TaskRatingRevisionDto[];
   /** Projects (visible to the caller) the employee belongs to. */
   projects: Array<{ id: string; name: string; role: ProjectRole; removed: boolean }>;
+  departments: Array<{ id: string; nameAr: string; nameEn: string; isPrimary: boolean }>;
 }
 
 export interface NotificationDto {
@@ -260,9 +526,22 @@ export interface DashboardDto {
     /** Open tasks whose deadline is within the next 24 hours. */
     dueSoonTasks: number;
     awaitingRating: number;
+    inProgressTasks: number;
+    /** Tasks in scope awaiting a decision. */
+    pendingReviewTasks: number;
+    /** Submissions waiting for the caller's own decision (delegator or approver). */
+    toReview: number;
+    /** Caller's tasks sent back (rejected/returned) and not yet resubmitted. */
+    rejectedSubmissions: number;
+    incomingTransfers: number;
+    /** Admin only. */
+    employees?: number;
+    departments?: number;
   };
   /** Present only for admins/managers. */
   performance?: EmployeePerformanceSummaryDto[];
+  /** Admins/managers: open work per employee in scope (no rating data). */
+  workload?: Array<{ employee: UserSummary; open: number; overdue: number; pendingReview: number }>;
   upcoming: TaskDto[];
   /** Latest task-history entries within the caller's scope (never rating data). */
   recentActivity: ActivityDto[];

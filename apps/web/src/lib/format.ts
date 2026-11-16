@@ -31,6 +31,18 @@ export function formatRelative(iso: string, now = Date.now()): string {
   return rtf.format(Math.round(diff / 86400_000), 'day');
 }
 
+/** Duration such as "1d 4h" / "1 يوم 4 س" (accountable time, budgets, extensions). */
+export function formatDuration(ms: number): string {
+  const mins = Math.round(Math.max(0, ms) / 60_000);
+  const d = Math.floor(mins / 1440);
+  const h = Math.floor((mins % 1440) / 60);
+  const m = mins % 60;
+  const ar = intlLocale?.startsWith('ar');
+  const u = ar ? { d: ' يوم', h: ' س', m: ' د' } : { d: 'd', h: 'h', m: 'm' };
+  const parts = [d && `${d}${u.d}`, h && `${h}${u.h}`, (m || (!d && !h)) && `${m}${u.m}`].filter(Boolean);
+  return parts.join(' ');
+}
+
 export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
@@ -67,6 +79,7 @@ export type TaskTone = 'blue' | 'amber' | 'green' | 'red' | 'gray';
 
 export function taskStatusDisplay(t: Pick<TaskDto, 'status' | 'isOverdue' | 'completedLate'>): { label: string; tone: TaskTone } {
   if (t.status === 'COMPLETED') return t.completedLate ? { label: 'Completed late', tone: 'amber' } : { label: 'Completed', tone: 'green' };
+  if (t.status === 'PENDING_REVIEW') return { label: 'Pending approval', tone: 'amber' };
   if (t.isOverdue) return { label: 'Overdue', tone: 'red' };
   if (t.status === 'IN_PROGRESS') return { label: 'In progress', tone: 'blue' };
   return { label: 'Assigned', tone: 'gray' };

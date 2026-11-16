@@ -35,7 +35,8 @@ export const environments: Record<EnvironmentConfig['name'], EnvironmentConfig> 
     db: { instanceClass: 't4g.micro', multiAz: false, allocatedStorageGb: 20, maxAllocatedStorageGb: 50, backupRetentionDays: 3, deletionProtection: false },
     api: { cpu: 256, memoryMiB: 512, minTasks: 1, maxTasks: 2 },
     web: { cpu: 256, memoryMiB: 512, minTasks: 1, maxTasks: 2 },
-    worker: { cpu: 256, memoryMiB: 512, minTasks: 1, maxTasks: 1 },
+    // Headless Chromium (PDF reports) needs >= 1 GB.
+    worker: { cpu: 512, memoryMiB: 1024, minTasks: 1, maxTasks: 1 },
     logRetentionDays: 14,
   },
   production: {
@@ -44,7 +45,7 @@ export const environments: Record<EnvironmentConfig['name'], EnvironmentConfig> 
     db: { instanceClass: 't4g.medium', multiAz: true, allocatedStorageGb: 50, maxAllocatedStorageGb: 500, backupRetentionDays: 14, deletionProtection: true },
     api: { cpu: 512, memoryMiB: 1024, minTasks: 2, maxTasks: 6 },
     web: { cpu: 512, memoryMiB: 1024, minTasks: 2, maxTasks: 4 },
-    worker: { cpu: 256, memoryMiB: 512, minTasks: 1, maxTasks: 3 },
+    worker: { cpu: 512, memoryMiB: 2048, minTasks: 1, maxTasks: 3 },
     logRetentionDays: 90,
   },
 };

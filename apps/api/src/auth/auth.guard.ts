@@ -3,7 +3,8 @@ import { Reflector } from '@nestjs/core';
 import type { UserRole } from '@dailytasks/database';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthUser } from './auth.types';
-import { IS_PUBLIC, ROLES } from './decorators';
+import { ALLOW_PASSWORD_CHANGE, IS_PUBLIC, ROLES } from './decorators';
+import { ErrorCode, forbidden } from '../common/errors';
 import { TokenService } from './token.service';
 
 /**
@@ -41,6 +42,12 @@ export class AuthGuard implements CanActivate {
       locale: user.locale,
     };
     req.user = principal;
+    req.accessToken = header.slice(7).trim();
+
+    // Temporary password still in place: everything except the change-password flow is refused.
+    if (user.mustChangePassword && !this.reflector.getAllAndOverride<boolean>(ALLOW_PASSWORD_CHANGE, targets)) {
+      throw forbidden('You must change your temporary password first', ErrorCode.PASSWORD_CHANGE_REQUIRED);
+    }
 
     const roles = this.reflector.getAllAndOverride<UserRole[] | undefined>(ROLES, targets);
     if (roles && !roles.includes(user.role)) throw new ForbiddenException('Insufficient role');

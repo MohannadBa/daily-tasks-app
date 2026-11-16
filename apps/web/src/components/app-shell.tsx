@@ -3,19 +3,25 @@ import { useQuery } from '@tanstack/react-query';
 import clsx from 'clsx';
 import {
   ArrowLeft,
+  ArrowLeftRight,
   BarChart3,
   Bell,
   BellRing,
+  Building2,
   ChevronRight,
+  ClipboardCheck,
   ClipboardList,
   Download,
+  FileBarChart2,
   FolderKanban,
+  FolderOpen,
+  NotebookPen,
+  ShieldCheck,
   Languages,
   LayoutDashboard,
   LogOut,
   Menu,
   Settings,
-  Users,
   X,
   type LucideIcon,
 } from 'lucide-react';
@@ -27,6 +33,7 @@ import { useT } from '@/lib/i18n';
 import { useInstallState } from '@/lib/pwa';
 import { InstallBanner } from './install-app';
 import { Logo } from './logo';
+import { ForcedPasswordChange } from './password-change';
 import { RealtimeConnector, useRealtimeStatus } from './realtime';
 import { MeProvider, useMe } from './providers';
 import { Spinner } from './ui';
@@ -34,11 +41,15 @@ import { Spinner } from './ui';
 export function AppShell({ children, realtimeUrl }: { children: ReactNode; realtimeUrl?: string }) {
   return (
     <MeProvider fallback={<Spinner />}>
-      {() => (
-        <RealtimeConnector url={realtimeUrl}>
-          <Shell>{children}</Shell>
-        </RealtimeConnector>
-      )}
+      {(me) =>
+        me.mustChangePassword ? (
+          <ForcedPasswordChange />
+        ) : (
+          <RealtimeConnector url={realtimeUrl}>
+            <Shell>{children}</Shell>
+          </RealtimeConnector>
+        )
+      }
     </MeProvider>
   );
 }
@@ -63,7 +74,7 @@ interface NavItem {
   badge?: number;
 }
 
-const roleLabel = { COMPANY_ADMIN: 'Admin', PROJECT_MANAGER: 'Project manager', EMPLOYEE: 'Employee' } as const;
+const roleLabel = { ADMIN: 'Admin', PROJECT_MANAGER: 'Project manager', EMPLOYEE: 'Employee' } as const;
 
 /** Parent route for the mobile back button when there is no in-app history (e.g. opened from a deep link). */
 function parentOf(pathname: string): string | null {
@@ -85,10 +96,15 @@ function Shell({ children }: { children: ReactNode }) {
   const { t, locale, setLocale } = useT();
   const { standalone } = useInstallState();
   const [moreOpen, setMoreOpen] = useState(false);
-  const isAdmin = me.role === 'COMPANY_ADMIN';
+  const isAdmin = me.role === 'ADMIN';
   const isManager = isAdmin || me.managedProjectIds.length > 0;
   const unread = useQuery({ queryKey: ['notifications', 'unread'], queryFn: () => api.notifications.unreadCount(), refetchInterval: 30_000 });
   const unreadCount = unread.data?.count;
+  // Live workflow counters (refetched on every real-time event).
+  const reviews = useQuery({ queryKey: ['reviews', false], queryFn: () => api.reviews.inbox(), refetchInterval: 60_000 });
+  const incoming = useQuery({ queryKey: ['transfers', 'incoming'], queryFn: () => api.transfers.incoming(), refetchInterval: 60_000 });
+  const reviewCount = reviews.data?.length;
+  const transferCount = incoming.data?.length;
   // Home Screen icon badge (iOS 16.4+ installed app, Chrome/Edge installed apps).
   useEffect(() => {
     if (unreadCount === undefined) return;
@@ -125,24 +141,38 @@ function Shell({ children }: { children: ReactNode }) {
   // '/' and '/settings' have child routes with their own nav entries, so match them exactly.
   const active = (href: string) => (href === '/' || href === '/settings' ? pathname === href : pathname === href || pathname.startsWith(`${href}/`));
 
+  // Navigation by permission (the API enforces everything; this only hides what cannot be used).
   const primary: NavItem[] = [
     { href: '/', label: t('Home'), icon: LayoutDashboard },
     { href: '/tasks', label: t(isManager ? 'Tasks' : 'My tasks'), icon: ClipboardList },
-    { href: '/projects', label: t('Projects'), icon: FolderKanban },
+    isManager
+      ? { href: '/reviews', label: t('Reviews'), icon: ClipboardCheck, badge: reviewCount }
+      : { href: '/personal', label: t('Personal'), icon: NotebookPen },
     { href: '/notifications', label: t('Alerts'), icon: Bell, badge: unreadCount },
   ];
-  const secondary: NavItem[] = [
-    { href: '/settings/notifications', label: t('Notification settings'), icon: BellRing },
+  const workspace: NavItem[] = [
+    { href: '/projects', label: t('Projects'), icon: FolderKanban },
+    ...(!isManager || reviewCount ? [{ href: '/reviews', label: t('Review inbox'), icon: ClipboardCheck, badge: reviewCount }] : []),
+    { href: '/transfers', label: t('Transfers'), icon: ArrowLeftRight, badge: transferCount },
+    { href: '/personal', label: t('Personal tasks'), icon: NotebookPen },
+    { href: '/documents', label: t('Documents'), icon: FolderOpen },
     ...(isManager ? [{ href: '/employees', label: t('Employees'), icon: BarChart3 }] : []),
-    ...(isAdmin ? [{ href: '/users', label: t('Team'), icon: Users }] : []),
+    ...(isAdmin ? [{ href: '/departments', label: t('Departments'), icon: Building2 }] : []),
+    { href: '/reports', label: t('Reports'), icon: FileBarChart2 },
+  ];
+  const secondary: NavItem[] = [
+    ...workspace.filter((n) => !primary.some((p) => p.href === n.href)),
+    ...(isAdmin ? [{ href: '/users', label: t('Administration'), icon: ShieldCheck }] : []),
+    { href: '/settings/notifications', label: t('Notification settings'), icon: BellRing },
     { href: '/settings', label: t('Profile & settings'), icon: Settings },
   ];
   const desktopNav: NavItem[] = [
     { href: '/', label: t('Dashboard'), icon: LayoutDashboard },
-    { href: '/projects', label: t('Projects'), icon: FolderKanban },
     { href: '/tasks', label: t(isManager ? 'Tasks' : 'My tasks'), icon: ClipboardList },
-    ...secondary.filter((n) => !n.href.startsWith('/settings')),
+    ...(isManager ? [{ href: '/reviews', label: t('Review inbox'), icon: ClipboardCheck, badge: reviewCount }] : []),
+    ...workspace.filter((n) => !(isManager && n.href === '/reviews')),
     { href: '/notifications', label: t('Notifications'), icon: Bell, badge: unreadCount },
+    ...(isAdmin ? [{ href: '/users', label: t('Administration'), icon: ShieldCheck }] : []),
     { href: '/settings/notifications', label: t('Notification settings'), icon: BellRing },
     { href: '/settings', label: t('Settings'), icon: Settings },
   ];

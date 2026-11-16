@@ -2,10 +2,22 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { InstallCard } from '@/components/install-app';
+import { useFeedback } from '@/components/feedback';
+import { ChangePasswordForm } from '@/components/password-change';
 import { useMe } from '@/components/providers';
 import { Button, Card, ErrorBox, Field, Input, LinkButton, PageHeader, Select } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useT } from '@/lib/i18n';
+
+function PasswordCard() {
+  const { t } = useT();
+  const { toast } = useFeedback();
+  return (
+    <Card title={t('Password')}>
+      <ChangePasswordForm onDone={() => toast(t('Password changed'))} />
+    </Card>
+  );
+}
 
 function Profile() {
   const me = useMe();
@@ -101,7 +113,8 @@ export default function SettingsPage() {
           </Card>
           <InstallCard />
         </div>
-        {isManager && <CompanySettings editable={me.role === 'COMPANY_ADMIN'} />}
+        <PasswordCard />
+        {isManager && <CompanySettings editable={me.role === 'ADMIN'} />}
       </div>
     </>
   );

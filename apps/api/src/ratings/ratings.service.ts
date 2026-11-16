@@ -10,6 +10,7 @@ import type { ratingSchema, z } from '@dailytasks/validation';
 import { AccessService } from '../access/access.service';
 import type { AuthUser } from '../auth/auth.types';
 import { PrismaService } from '../prisma/prisma.service';
+import { overdueWhere } from '../tasks/task.mapper';
 
 const summary = (u: { id: string; name: string; email: string }) => ({ id: u.id, name: u.name, email: u.email });
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -86,19 +87,23 @@ export class RatingsService {
   async employeeSummaries(user: AuthUser, projectId?: string): Promise<EmployeePerformanceSummaryDto[]> {
     this.access.assertCanViewRatings(user);
     const projectIds = await this.scopeProjectIds(user, projectId);
+    const scope = this.taskScopeFor(user, projectIds);
     const employees = await this.prisma.user.findMany({
       where: {
         companyId: user.companyId,
+        id: { not: user.id }, // nobody sees their own performance figures here
         memberships: { some: { role: ProjectRole.EMPLOYEE, removedAt: null, ...(projectIds ? { projectId: { in: projectIds } } : {}) } },
       },
       orderBy: { name: 'asc' },
     });
-    return Promise.all(employees.map((e) => this.summaryFor(e, projectIds)));
+    return Promise.all(employees.map((e) => this.summaryFor(e, scope)));
   }
 
   async employeeDetail(user: AuthUser, employeeId: string, projectId?: string): Promise<EmployeePerformanceDetailDto> {
     this.access.assertCanViewRatings(user);
     const projectIds = await this.scopeProjectIds(user, projectId);
+    if (employeeId === user.id) throw new NotFoundException('Employee not found'); // own ratings stay private
+    const scope = this.taskScopeFor(user, projectIds);
     const employee = await this.prisma.user.findFirst({
       where: {
         id: employeeId,
@@ -109,16 +114,16 @@ export class RatingsService {
     });
     if (!employee) throw new NotFoundException('Employee not found');
 
-    const taskFilter: Prisma.TaskWhereInput = { status: TaskStatus.COMPLETED, ...(projectIds ? { projectId: { in: projectIds } } : {}) };
+    const taskFilter: Prisma.TaskWhereInput = { AND: [{ status: TaskStatus.COMPLETED }, scope] };
     const [base, ratings, revisions] = await Promise.all([
-      this.summaryFor(employee, projectIds),
+      this.summaryFor(employee, scope),
       this.prisma.taskRating.findMany({
         where: { employeeId, task: taskFilter },
         include: { rater: true, task: { include: { project: true } } },
         orderBy: { updatedAt: 'desc' },
       }),
       this.prisma.taskRatingRevision.findMany({
-        where: { rating: { employeeId, task: projectIds ? { projectId: { in: projectIds } } : {} } },
+        where: { rating: { employeeId, task: scope } },
         include: { changedBy: true, rating: { include: { task: true } } },
         orderBy: { createdAt: 'desc' },
         take: 200,
@@ -132,6 +137,9 @@ export class RatingsService {
     return {
       ...base,
       projects: memberships.map((m) => ({ id: m.project.id, name: m.project.name, role: m.role, removed: m.removedAt !== null })),
+      departments: (
+        await this.prisma.departmentMembership.findMany({ where: { userId: employeeId, removedAt: null }, include: { department: true }, orderBy: { isPrimary: 'desc' } })
+      ).map((m) => ({ id: m.department.id, nameAr: m.department.nameAr, nameEn: m.department.nameEn, isPrimary: m.isPrimary })),
       ratings: ratings.map((r) => ({
         taskId: r.taskId,
         taskTitle: r.task.title,
@@ -160,19 +168,26 @@ export class RatingsService {
     };
   }
 
-  /** Average and counts for one employee, restricted to the given projects (null = whole company). */
-  async summaryFor(employee: { id: string; name: string; email: string }, projectIds: string[] | null): Promise<EmployeePerformanceSummaryDto> {
-    const inScope: Prisma.TaskWhereInput = projectIds ? { projectId: { in: projectIds } } : {};
+  /**
+   * Tasks whose ratings/figures the caller may see: tasks they manage (created / approve), optionally
+   * narrowed to projects. A manager never sees figures from another manager's tasks.
+   */
+  private taskScopeFor(user: AuthUser, projectIds: string[] | null): Prisma.TaskWhereInput {
+    return { AND: [this.access.managedTaskScope(user), ...(projectIds ? [{ projectId: { in: projectIds } }] : [])] };
+  }
+
+  /** Average and counts for one employee over the given task scope. */
+  async summaryFor(employee: { id: string; name: string; email: string }, inScope: Prisma.TaskWhereInput): Promise<EmployeePerformanceSummaryDto> {
     const now = new Date();
     const [agg, completed, open, overdue] = await Promise.all([
       this.prisma.taskRating.aggregate({
-        where: { employeeId: employee.id, task: { status: TaskStatus.COMPLETED, assigneeId: employee.id, ...inScope } },
+        where: { employeeId: employee.id, task: { AND: [{ status: TaskStatus.COMPLETED, assigneeId: employee.id }, inScope] } },
         _avg: { stars: true },
         _count: { _all: true },
       }),
-      this.prisma.task.count({ where: { assigneeId: employee.id, status: TaskStatus.COMPLETED, ...inScope } }),
-      this.prisma.task.count({ where: { assigneeId: employee.id, status: { not: TaskStatus.COMPLETED }, ...inScope } }),
-      this.prisma.task.count({ where: { assigneeId: employee.id, status: { not: TaskStatus.COMPLETED }, deadline: { lt: now }, ...inScope } }),
+      this.prisma.task.count({ where: { AND: [{ assigneeId: employee.id, status: TaskStatus.COMPLETED }, inScope] } }),
+      this.prisma.task.count({ where: { AND: [{ assigneeId: employee.id, status: { not: TaskStatus.COMPLETED } }, inScope] } }),
+      this.prisma.task.count({ where: { AND: [{ assigneeId: employee.id }, inScope, overdueWhere(now, this.prisma.task.fields.budgetMs)] } }),
     ]);
     return {
       employee: summary(employee),

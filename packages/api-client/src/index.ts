@@ -1,6 +1,20 @@
 import type {
   AttachmentDto,
+  AuditEntryDto,
   CompanySettingsDto,
+  CreatedUserDto,
+  DepartmentDto,
+  DepartmentMemberDto,
+  DocumentCategoryDto,
+  ExtensionDto,
+  PersonalTaskDto,
+  ProjectDocumentDto,
+  ReportJobDto,
+  ReviewItemDto,
+  SubmissionDto,
+  TaskTimeLedgerDto,
+  TransferDto,
+  UserSummary,
   CurrentUser,
   DashboardDto,
   DownloadUrlResponse,
@@ -105,13 +119,35 @@ export function createApiClient(options: ApiClientOptions) {
       completeNewPassword: (email: string, session: string, newPassword: string) =>
         post<LoginResponse>('/auth/new-password', { email, session, newPassword }),
       me: () => get<CurrentUser>('/auth/me'),
+      changePassword: (currentPassword: string, newPassword: string) => post<void>('/auth/change-password', { currentPassword, newPassword }),
       updateProfile: (body: { name?: string; locale?: 'en' | 'ar' }) => patch<CurrentUser>('/me', body),
     },
     users: {
-      list: (query?: { role?: string; q?: string }) => get<UserDto[]>('/users', query),
-      invite: (body: { email: string; name: string; role: string; locale?: string; temporaryPassword?: string }) => post<UserDto>('/users', body),
-      resetPassword: (id: string, body: { temporaryPassword?: string }) => post<{ mode: 'email' | 'temporary' }>(`/users/${id}/reset-password`, body),
+      list: (query?: { role?: string; q?: string; departmentId?: string }) => get<UserDto[]>('/users', query),
+      get: (id: string) => get<UserDto>(`/users/${id}`),
+      /** temporaryPassword is present only once, when passwordDelivery = SHOW_ONCE. */
+      invite: (body: {
+        email: string;
+        name: string;
+        role: string;
+        locale?: string;
+        temporaryPassword?: string;
+        passwordDelivery?: 'EMAIL' | 'SHOW_ONCE';
+        departments?: Array<{ departmentId: string; isPrimary?: boolean }>;
+        projects?: Array<{ projectId: string; role: 'MANAGER' | 'EMPLOYEE' }>;
+      }) => post<CreatedUserDto>('/users', body),
+      resetPassword: (id: string, body: { temporaryPassword?: string; passwordDelivery?: 'EMAIL' | 'SHOW_ONCE' }) =>
+        post<{ mode: 'email' | 'temporary'; temporaryPassword?: string }>(`/users/${id}/reset-password`, body),
       update: (id: string, body: { name?: string; role?: string; isActive?: boolean }) => patch<UserDto>(`/users/${id}`, body),
+      setDepartments: (id: string, departments: Array<{ departmentId: string; isPrimary?: boolean }>) => put<UserDto>(`/users/${id}/departments`, { departments }),
+      audit: (id: string) => get<AuditEntryDto[]>(`/users/${id}/audit`),
+    },
+    departments: {
+      list: (query?: { includeInactive?: boolean }) => get<DepartmentDto[]>('/departments', query),
+      create: (body: { code: string; nameAr: string; nameEn: string; sortOrder?: number }) => post<DepartmentDto>('/departments', body),
+      update: (id: string, body: { nameAr?: string; nameEn?: string; isActive?: boolean; sortOrder?: number }) => patch<DepartmentDto>(`/departments/${id}`, body),
+      members: (id: string) => get<DepartmentMemberDto[]>(`/departments/${id}/members`),
+      assignableEmployees: (id: string, projectId: string) => get<UserSummary[]>(`/departments/${id}/assignable-employees`, { projectId }),
     },
     projects: {
       list: () => get<ProjectDto[]>('/projects'),
@@ -123,11 +159,21 @@ export function createApiClient(options: ApiClientOptions) {
       removeMember: (id: string, userId: string) => del<void>(`/projects/${id}/members/${userId}`),
     },
     tasks: {
-      list: (query?: { projectId?: string; assigneeId?: string; status?: string; view?: string; sort?: string; q?: string; page?: number; pageSize?: number }) =>
+      list: (query?: { projectId?: string; assigneeId?: string; departmentId?: string; priority?: string; status?: string; view?: string; sort?: string; q?: string; page?: number; pageSize?: number }) =>
         get<Paginated<TaskDto>>('/tasks', query),
       get: (id: string) => get<TaskDetailDto>(`/tasks/${id}`),
-      create: (body: { projectId: string; assigneeId: string; title: string; description?: string; deadline: string }) => post<TaskDetailDto>('/tasks', body),
-      update: (id: string, body: { title?: string; description?: string; deadline?: string }) => patch<TaskDetailDto>(`/tasks/${id}`, body),
+      create: (body: { projectId: string; departmentId: string; assigneeId: string; title: string; description?: string; deadline: string; priority?: string; approverId?: string }) =>
+        post<TaskDetailDto>('/tasks', body),
+      update: (id: string, body: { title?: string; description?: string; deadline?: string; priority?: string; departmentId?: string }) => patch<TaskDetailDto>(`/tasks/${id}`, body),
+      changeApprover: (id: string, approverId: string) => patch<TaskDetailDto>(`/tasks/${id}/approver`, { approverId }),
+      submit: (id: string, body: { comment: string; attachmentIds?: string[] }) => post<SubmissionDto>(`/tasks/${id}/submissions`, body),
+      submissions: (id: string) => get<SubmissionDto[]>(`/tasks/${id}/submissions`),
+      requestTransfer: (id: string, body: { toUserId: string; reason: string }) => post<TransferDto>(`/tasks/${id}/transfers`, body),
+      transfers: (id: string) => get<TransferDto[]>(`/tasks/${id}/transfers`),
+      transferCandidates: (id: string) => get<UserSummary[]>(`/tasks/${id}/transfer-candidates`),
+      requestExtension: (id: string, body: { requestedMinutes?: number; requestedDeadline?: string; reason: string }) => post<ExtensionDto>(`/tasks/${id}/extensions`, body),
+      extensions: (id: string) => get<ExtensionDto[]>(`/tasks/${id}/extensions`),
+      time: (id: string) => get<TaskTimeLedgerDto>(`/tasks/${id}/time`),
       reassign: (id: string, assigneeId: string) => post<TaskDetailDto>(`/tasks/${id}/reassign`, { assigneeId }),
       start: (id: string) => post<TaskDetailDto>(`/tasks/${id}/start`),
       complete: (id: string, body: { comment: string; attachmentIds?: string[] }) => post<TaskDetailDto>(`/tasks/${id}/complete`, body),
@@ -141,9 +187,57 @@ export function createApiClient(options: ApiClientOptions) {
       getRating: (id: string) => get<TaskRatingDto | null>(`/tasks/${id}/rating`),
       rate: (id: string, body: { stars: number; feedback?: string | null }) => put<TaskRatingDto>(`/tasks/${id}/rating`, body),
     },
+    submissions: {
+      forward: (id: string, body: { note?: string; attachmentIds?: string[] } = {}) => post<SubmissionDto>(`/submissions/${id}/forward`, body),
+      returnToDelegate: (id: string, reason: string) => post<SubmissionDto>(`/submissions/${id}/return`, { reason }),
+      approve: (id: string, body: { note?: string; adminReason?: string } = {}) => post<SubmissionDto>(`/submissions/${id}/approve`, body),
+      reject: (id: string, body: { reason: string; adminReason?: string }) => post<SubmissionDto>(`/submissions/${id}/reject`, body),
+      withdraw: (id: string) => post<SubmissionDto>(`/submissions/${id}/withdraw`),
+    },
+    reviews: {
+      /** Pending submissions addressed to me (as delegator or approver). */
+      inbox: () => get<ReviewItemDto[]>('/me/reviews'),
+    },
+    transfers: {
+      incoming: () => get<TransferDto[]>('/me/transfers'),
+      accept: (id: string, note?: string) => post<TransferDto>(`/transfers/${id}/accept`, { note }),
+      decline: (id: string, reason: string) => post<TransferDto>(`/transfers/${id}/decline`, { reason }),
+      cancel: (id: string, note?: string) => post<TransferDto>(`/transfers/${id}/cancel`, { note }),
+    },
+    extensions: {
+      decide: (id: string, body: { decision: 'APPROVE' | 'PARTIAL' | 'REJECT'; grantedMinutes?: number; note?: string }) => post<ExtensionDto>(`/extensions/${id}/decide`, body),
+      cancel: (id: string) => post<ExtensionDto>(`/extensions/${id}/cancel`),
+    },
+    documents: {
+      categories: () => get<DocumentCategoryDto[]>('/document-categories'),
+      list: (projectId: string, query?: { q?: string; categoryId?: string; source?: string; departmentId?: string; taskId?: string; sort?: string; page?: number; pageSize?: number }) =>
+        get<Paginated<ProjectDocumentDto>>(`/projects/${projectId}/documents`, query),
+      get: (id: string) => get<ProjectDocumentDto>(`/documents/${id}`),
+      requestUpload: (projectId: string, body: { title: string; description?: string | null; categoryId: string; visibility?: string; fileName: string; contentType: string; sizeBytes: number }) =>
+        post<{ documentId: string; uploadUrl: string; method: 'PUT'; headers: Record<string, string>; expiresIn: number }>(`/projects/${projectId}/documents/upload-url`, body),
+      confirm: (id: string) => post<ProjectDocumentDto>(`/documents/${id}/confirm`),
+      update: (id: string, body: { title?: string; description?: string | null; categoryId?: string; visibility?: string }) => patch<ProjectDocumentDto>(`/documents/${id}`, body),
+      archive: (id: string) => post<void>(`/documents/${id}/archive`),
+      downloadUrl: (id: string, preview = false) => get<DownloadUrlResponse & { inline?: boolean }>(`/documents/${id}/download-url`, preview ? { preview: 'true' } : undefined),
+    },
+    personalTasks: {
+      list: (query?: { status?: 'OPEN' | 'DONE'; q?: string; page?: number; pageSize?: number }) => get<Paginated<PersonalTaskDto>>('/me/personal-tasks', query),
+      create: (body: { title: string; notes?: string | null; dueAt?: string | null; priority?: string }) => post<PersonalTaskDto>('/me/personal-tasks', body),
+      update: (id: string, body: { title?: string; notes?: string | null; dueAt?: string | null; priority?: string }) => patch<PersonalTaskDto>(`/me/personal-tasks/${id}`, body),
+      complete: (id: string) => post<PersonalTaskDto>(`/me/personal-tasks/${id}/complete`),
+      reopen: (id: string) => post<PersonalTaskDto>(`/me/personal-tasks/${id}/reopen`),
+      remove: (id: string) => del<void>(`/me/personal-tasks/${id}`),
+    },
+    reports: {
+      request: (body: Record<string, unknown> & { type: 'TASK' | 'EMPLOYEE' | 'PROJECTS' }) => post<ReportJobDto>('/reports', body),
+      get: (id: string) => get<ReportJobDto>(`/reports/${id}`),
+      mine: () => get<ReportJobDto[]>('/me/reports'),
+      downloadUrl: (id: string) => get<DownloadUrlResponse>(`/reports/${id}/download-url`),
+    },
     attachments: {
       confirm: (id: string) => post<AttachmentDto>(`/attachments/${id}/confirm`),
-      downloadUrl: (id: string) => get<DownloadUrlResponse>(`/attachments/${id}/download-url`),
+      /** preview=true: inline URL for images/PDF (in-app thumbnails and viewer). */
+      downloadUrl: (id: string, preview = false) => get<DownloadUrlResponse & { inline?: boolean }>(`/attachments/${id}/download-url`, preview ? { preview: 'true' } : undefined),
     },
     performance: {
       employees: (projectId?: string) => get<EmployeePerformanceSummaryDto[]>('/performance/employees', { projectId }),

@@ -6,6 +6,7 @@ import { EventProcessor } from '../src/processor';
 import { RecordingPushTransport } from '../src/push';
 import { MemoryQueue } from '../src/queue';
 import { computeDeadlineJobs, deadlineMessage, LocalDbScheduler } from '../src/scheduler';
+import { overdueLedger, taskFields } from './fixtures';
 
 const prisma = new PrismaClient();
 let push: RecordingPushTransport;
@@ -18,7 +19,7 @@ const u = () => `${Date.now()}-${n++}`;
 
 async function world() {
   const company = await prisma.company.create({ data: { name: 'W', reminderOffsetsMinutes: [1440, 60] } });
-  const mk = (name: string, role: 'PROJECT_MANAGER' | 'EMPLOYEE' | 'COMPANY_ADMIN') =>
+  const mk = (name: string, role: 'PROJECT_MANAGER' | 'EMPLOYEE' | 'ADMIN') =>
     prisma.user.create({ data: { companyId: company.id, email: `${name}-${u()}@t.local`, name, role, locale: 'en' } });
   const manager = await mk('Manager', 'PROJECT_MANAGER');
   const manager2 = await mk('Manager2', 'PROJECT_MANAGER');
@@ -39,7 +40,7 @@ async function world() {
   await sub(emp.id, 'ANDROID');
   await sub(manager.id, 'IOS');
   const task = await prisma.task.create({
-    data: { projectId: project.id, assigneeId: emp.id, createdById: manager.id, title: 'Fix door', deadline: new Date(Date.now() + 48 * 3600_000), scheduleVersion: 1 },
+    data: { projectId: project.id, assigneeId: emp.id, createdById: manager.id, title: 'Fix door', deadline: new Date(Date.now() + 48 * 3600_000), scheduleVersion: 1, ...(await taskFields(prisma, company.id, manager.id, new Date(Date.now() + 48 * 3600_000))) },
   });
   return { company, manager, manager2, emp, emp2, project, task };
 }
@@ -87,21 +88,28 @@ describe('notification fan-out', () => {
     expect(push.sent).toHaveLength(2);
   });
 
-  it('TASK_COMPLETED notifies all managers once each and never the actor', async () => {
+  it('TASK_COMPLETED notifies only the task creator and approver (never other project managers, never the actor)', async () => {
     const w = await world();
-    // manager2 also an... extra duplicate membership path: recipients set dedupes.
     await processor.handle(msg(OutboxEventType.TASK_COMPLETED, { taskId: w.task.id, projectId: w.project.id, actorId: w.emp.id }, `TASK_COMPLETED:${w.task.id}:0`));
     const rows = await prisma.notification.findMany({ where: { taskId: w.task.id } });
-    expect(rows.map((r) => r.userId).sort()).toEqual([w.manager.id, w.manager2.id].sort());
+    expect(rows.map((r) => r.userId)).toEqual([w.manager.id]); // manager2 manages the project but not this task
     expect(rows.every((r) => r.type === 'TASK_COMPLETED')).toBe(true);
   });
 
-  it('employee comment notifies managers; manager comment notifies the assignee', async () => {
+  it('when creator and approver differ, both are notified once', async () => {
+    const w = await world();
+    await prisma.task.update({ where: { id: w.task.id }, data: { approverId: w.manager2.id } });
+    await processor.handle(msg(OutboxEventType.TASK_COMPLETED, { taskId: w.task.id, projectId: w.project.id, actorId: w.emp.id }, `TASK_COMPLETED:${w.task.id}:x`));
+    const rows = await prisma.notification.findMany({ where: { taskId: w.task.id } });
+    expect(rows.map((r) => r.userId).sort()).toEqual([w.manager.id, w.manager2.id].sort());
+  });
+
+  it("employee comment notifies the task's managers only; manager comment notifies the assignee", async () => {
     const w = await world();
     await processor.handle(msg(OutboxEventType.TASK_COMMENT_ADDED, { taskId: w.task.id, projectId: w.project.id, actorId: w.emp.id, details: { byAssignee: true } }, 'C1'));
     await processor.handle(msg(OutboxEventType.TASK_COMMENT_ADDED, { taskId: w.task.id, projectId: w.project.id, actorId: w.manager.id, details: { byAssignee: false } }, 'C2'));
     const rows = await prisma.notification.findMany({ where: { taskId: w.task.id }, orderBy: { dedupeKey: 'asc' } });
-    expect(rows.filter((r) => r.dedupeKey === 'C1').map((r) => r.userId).sort()).toEqual([w.manager.id, w.manager2.id].sort());
+    expect(rows.filter((r) => r.dedupeKey === 'C1').map((r) => r.userId)).toEqual([w.manager.id]);
     expect(rows.filter((r) => r.dedupeKey === 'C2').map((r) => r.userId)).toEqual([w.emp.id]);
   });
 
@@ -145,7 +153,7 @@ describe('deadline scheduling', () => {
     expect(await prisma.scheduledEvent.count({ where: { name: { startsWith: `t-${w.task.id}-v1-` } } })).toBe(3);
 
     // Deadline moved: version 2
-    await prisma.task.update({ where: { id: w.task.id }, data: { deadline: new Date(Date.now() + 72 * 3600_000), scheduleVersion: 2 } });
+    await prisma.task.update({ where: { id: w.task.id }, data: { deadline: new Date(Date.now() + 72 * 3600_000), effectiveDueAt: new Date(Date.now() + 72 * 3600_000), scheduleVersion: 2 } });
     await processor.handle(msg(OutboxEventType.TASK_SCHEDULE_SYNC, { taskId: w.task.id, scheduleVersion: 2 }, 'S2'));
     expect(await prisma.scheduledEvent.count({ where: { name: { startsWith: `t-${w.task.id}-v1-` } } })).toBe(0);
     expect(await prisma.scheduledEvent.count({ where: { name: { startsWith: `t-${w.task.id}-v2-` } } })).toBe(3);
@@ -155,7 +163,7 @@ describe('deadline scheduling', () => {
     expect(await prisma.scheduledEvent.count({ where: { name: { startsWith: `t-${w.task.id}-v1-` } } })).toBe(0);
 
     // An old-version deadline event that already fired (e.g. from EventBridge) is ignored
-    await prisma.task.update({ where: { id: w.task.id }, data: { deadline: new Date(Date.now() - 1000) } });
+    await prisma.task.update({ where: { id: w.task.id }, data: overdueLedger() });
     await processor.handle(deadlineMessage({ taskId: w.task.id, scheduleVersion: 1, kind: 'OVERDUE', offsetMinutes: 0 }));
     expect(await prisma.notification.count({ where: { taskId: w.task.id } })).toBe(0);
   });
@@ -173,14 +181,14 @@ describe('deadline scheduling', () => {
     expect(t.completedLate).toBe(false);
   });
 
-  it('open overdue tasks notify assignee and managers exactly once', async () => {
+  it("open overdue tasks notify the assignee and the task's managers exactly once", async () => {
     const w = await world();
-    await prisma.task.update({ where: { id: w.task.id }, data: { deadline: new Date(Date.now() - 1000) } });
+    await prisma.task.update({ where: { id: w.task.id }, data: overdueLedger() });
     const m = deadlineMessage({ taskId: w.task.id, scheduleVersion: 1, kind: 'OVERDUE', offsetMinutes: 0 });
     await processor.handle(m);
     await processor.handle(m);
     const rows = await prisma.notification.findMany({ where: { taskId: w.task.id } });
-    expect(rows.map((r) => r.userId).sort()).toEqual([w.emp.id, w.manager.id, w.manager2.id].sort());
+    expect(rows.map((r) => r.userId).sort()).toEqual([w.emp.id, w.manager.id].sort());
     expect(rows.every((r) => r.type === 'TASK_OVERDUE')).toBe(true);
   });
 

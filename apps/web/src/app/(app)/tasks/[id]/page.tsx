@@ -10,6 +10,11 @@ import { errorText, useFeedback } from '@/components/feedback';
 import { FilePicker } from '@/components/file-picker';
 import { StarInput, Stars } from '@/components/stars';
 import { StatusBadge } from '@/components/task-table';
+import { priorityLabel } from '@/components/task-form';
+import { WorkflowPanel } from '@/components/workflow-panel';
+import { ImageGallery, isPreviewableImage } from '@/components/image-preview';
+import { ExtensionHistory, SubmissionHistory, TimeAccounting, TransferHistory } from '@/components/task-records';
+import { useMe } from '@/components/providers';
 import { Badge, Button, Card, Empty, ErrorBox, Field, Input, Select, Spinner, Textarea } from '@/components/ui';
 import { api } from '@/lib/api';
 import { openAttachment, uploadFiles } from '@/lib/files';
@@ -19,6 +24,18 @@ import { useT } from '@/lib/i18n';
 
 function AttachmentList({ items }: { items: AttachmentDto[] }) {
   if (items.length === 0) return null;
+  // Images are previewed in place (thumbnail + in-app viewer); other files stay download chips.
+  const images = items.filter((a) => isPreviewableImage(a.contentType));
+  const files = items.filter((a) => !isPreviewableImage(a.contentType));
+  return (
+    <>
+      <ImageGallery source="attachment" className="mt-2" images={images.map((a) => ({ id: a.id, name: a.fileName, contentType: a.contentType, sizeBytes: a.sizeBytes }))} />
+      {files.length > 0 && <FileChips items={files} />}
+    </>
+  );
+}
+
+function FileChips({ items }: { items: AttachmentDto[] }) {
   return (
     <ul className="mt-2 grid gap-2 sm:flex sm:flex-wrap">
       {items.map((a) => (
@@ -145,14 +162,60 @@ function RatingPanel({ task }: { task: TaskDetailDto }) {
   );
 }
 
+function StartButton({ taskId }: { taskId: string }) {
+  const qc = useQueryClient();
+  const { t } = useT();
+  const { toast } = useFeedback();
+  const start = useMutation({
+    mutationFn: () => api.tasks.start(taskId),
+    onSuccess: async () => {
+      toast(t('Work started'));
+      await Promise.all(['task', 'history'].map((k) => qc.invalidateQueries({ queryKey: [k, taskId] })));
+      await qc.invalidateQueries({ queryKey: ['tasks'] });
+    },
+    onError: (e) => toast(errorText(e), 'error'),
+  });
+  return (
+    <Button size="sm" onClick={() => start.mutate()} loading={start.isPending}>
+      {t('Start task')}
+    </Button>
+  );
+}
+
 function ManagerActions({ task }: { task: TaskDetailDto }) {
   const qc = useQueryClient();
   const { t } = useT();
-  const [mode, setMode] = useState<'none' | 'reopen' | 'reassign'>('none');
+  const [mode, setMode] = useState<'none' | 'reopen' | 'reassign' | 'approver'>('none');
+  const me = useMe();
+  const [approverId, setApproverId] = useState('');
+  // Approver candidates: managers of this project + company admins.
+  const managers = useQuery({ queryKey: ['members', task.projectId], queryFn: () => api.projects.members(task.projectId), enabled: mode === 'approver' });
+  const admins = useQuery({ queryKey: ['users', 'ADMIN'], queryFn: () => api.users.list({ role: 'ADMIN' }), enabled: mode === 'approver' && me.role === 'ADMIN' });
+  const approverOptions = [
+    ...(managers.data ?? []).filter((m) => m.role === 'MANAGER').map((m) => ({ id: m.userId, name: m.name })),
+    ...(admins.data ?? []).filter((u) => u.isActive).map((u) => ({ id: u.id, name: u.name })),
+  ].filter((o, i, all) => o.id !== task.approver.id && all.findIndex((x) => x.id === o.id) === i);
+  const changeApprover = useMutation({
+    mutationFn: () => api.tasks.changeApprover(task.id, approverId),
+    onSuccess: () => {
+      setMode('none');
+      toast(t('Approver changed'));
+      return refresh();
+    },
+  });
   const [reason, setReason] = useState('');
   const [deadline, setDeadline] = useState(isoToLocalInput(new Date(Math.max(Date.now() + 86400_000, new Date(task.deadline).getTime())).toISOString()));
   const [assigneeId, setAssigneeId] = useState('');
-  const members = useQuery({ queryKey: ['members', task.projectId], queryFn: () => api.projects.members(task.projectId), enabled: mode === 'reassign' });
+  // Reassignment candidates: employees of the project AND the task's department (server-filtered).
+  const eligible = useQuery({
+    queryKey: ['assignable', task.department?.id, task.projectId],
+    queryFn: () => api.departments.assignableEmployees(task.department!.id, task.projectId),
+    enabled: mode === 'reassign' && !!task.department,
+  });
+  const members = useQuery({ queryKey: ['members', task.projectId], queryFn: () => api.projects.members(task.projectId), enabled: mode === 'reassign' && !task.department });
+  const reassignOptions = task.department
+    ? (eligible.data ?? []).filter((u) => u.id !== task.assignee.id).map((u) => ({ id: u.id, name: u.name }))
+    : (members.data ?? []).filter((m) => m.role === 'EMPLOYEE' && m.userId !== task.assignee.id).map((m) => ({ id: m.userId, name: m.name }));
   const refresh = () => Promise.all([qc.invalidateQueries({ queryKey: ['task', task.id] }), qc.invalidateQueries({ queryKey: ['history', task.id] }), qc.invalidateQueries({ queryKey: ['tasks'] })]);
   const { toast } = useFeedback();
   const reopen = useMutation({ mutationFn: () => api.tasks.reopen(task.id, { reason, deadline: localInputToIso(deadline) }), onSuccess: () => { setMode('none'); toast(t('Task reopened')); return refresh(); } });
@@ -166,9 +229,14 @@ function ManagerActions({ task }: { task: TaskDetailDto }) {
             <Pencil className="h-4 w-4" aria-hidden /> {t('Edit')}
           </Link>
         )}
-        {task.permissions.canEdit && (
+        {task.permissions.canReassign && (
           <Button size="sm" variant="secondary" onClick={() => setMode(mode === 'reassign' ? 'none' : 'reassign')}>
             <UserRound className="h-4 w-4" aria-hidden /> {t('Reassign')}
+          </Button>
+        )}
+        {task.permissions.canChangeApprover && task.status !== 'COMPLETED' && (
+          <Button size="sm" variant="secondary" onClick={() => setMode(mode === 'approver' ? 'none' : 'approver')}>
+            <UserRound className="h-4 w-4" aria-hidden /> {t('Change approver')}
           </Button>
         )}
         {task.permissions.canReopen && (
@@ -189,15 +257,25 @@ function ManagerActions({ task }: { task: TaskDetailDto }) {
           <Button size="sm" type="submit" loading={reopen.isPending}>{t('Reopen task')}</Button>
         </form>
       )}
+      {mode === 'approver' && (
+        <form className="grid gap-3 rounded-lg bg-slate-50 p-4 sm:flex sm:flex-wrap sm:items-end" onSubmit={(e) => { e.preventDefault(); changeApprover.mutate(); }}>
+          <ErrorBox error={changeApprover.error} />
+          <Field label={t('New approver')}>
+            <Select required value={approverId} onChange={(e) => setApproverId(e.target.value)}>
+              <option value="">{t('Select…')}</option>
+              {approverOptions.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+            </Select>
+          </Field>
+          <Button size="sm" type="submit" loading={changeApprover.isPending} disabled={!approverId}>{t('Save')}</Button>
+        </form>
+      )}
       {mode === 'reassign' && (
         <form className="grid gap-3 rounded-lg bg-slate-50 p-4 sm:flex sm:flex-wrap sm:items-end" onSubmit={(e) => { e.preventDefault(); reassign.mutate(); }}>
           <ErrorBox error={reassign.error} />
           <Field label={t('New assignee')}>
             <Select required value={assigneeId} onChange={(e) => setAssigneeId(e.target.value)}>
               <option value="">{t('Select…')}</option>
-              {members.data?.filter((m) => m.role === 'EMPLOYEE' && m.userId !== task.assignee.id).map((m) => (
-                <option key={m.userId} value={m.userId}>{m.name}</option>
-              ))}
+              {reassignOptions.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
             </Select>
           </Field>
           <Button size="sm" type="submit" loading={reassign.isPending}>{t('Reassign')}</Button>
@@ -220,13 +298,14 @@ function ReplyBox({ task, completion }: { task: TaskDetailDto; completion: boole
       setProgress(files.length ? files.map(() => 0) : undefined);
       const uploaded = files.length ? await uploadFiles(task.id, files, (i, f) => setProgress((p) => p?.map((v, j) => (j === i ? f : v)))) : [];
       const attachmentIds = uploaded.map((a) => a.id);
-      if (completion) await api.tasks.complete(task.id, { comment: body.trim(), attachmentIds });
+      // Completion is a submission for approval; only the approver can complete the task.
+      if (completion) await api.tasks.submit(task.id, { comment: body.trim(), attachmentIds });
       else await api.tasks.addComment(task.id, { body: body.trim(), attachmentIds });
     },
     onSuccess: async () => {
       setBody('');
       setFiles([]);
-      toast(t(completion ? 'Task completed' : 'Reply sent'));
+      toast(t(completion ? 'Submitted for approval' : 'Reply sent'));
       await Promise.all(['task', 'comments', 'history'].map((k) => qc.invalidateQueries({ queryKey: [k, task.id] })));
       await qc.invalidateQueries({ queryKey: ['tasks'] });
       await qc.invalidateQueries({ queryKey: ['dashboard'] });
@@ -249,7 +328,7 @@ function ReplyBox({ task, completion }: { task: TaskDetailDto; completion: boole
       {fileError && <p className="text-xs text-danger-600">{fileError}</p>}
       <div className="flex justify-end">
         <Button type="submit" loading={send.isPending} disabled={!body.trim()} className="w-full sm:w-auto">
-          {completion ? (<><CheckCircle2 className="h-4 w-4" aria-hidden /> {t('Mark as completed')}</>) : t('Send reply')}
+          {completion ? (<><CheckCircle2 className="h-4 w-4" aria-hidden /> {t('Submit for approval')}</>) : t('Send reply')}
         </Button>
       </div>
     </form>
@@ -262,7 +341,7 @@ export default function TaskDetailPage() {
   const comments = useQuery({ queryKey: ['comments', id], queryFn: () => api.tasks.comments(id), enabled: !!task.data });
   const history = useQuery({ queryKey: ['history', id], queryFn: () => api.tasks.history(id), enabled: !!task.data });
   const [completing, setCompleting] = useState(false);
-  const { t } = useT();
+  const { t, locale } = useT();
 
   if (task.isLoading) return <Spinner />;
   if (task.error || !task.data) return <ErrorBox error={task.error ?? t('Task not found')} />;
@@ -278,9 +357,14 @@ export default function TaskDetailPage() {
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <StatusBadge task={td} />
             {td.reopenCount > 0 && <Badge>{t('Reopened ×{n}', { n: td.reopenCount })}</Badge>}
+            <Badge tone={td.priority === 'URGENT' ? 'red' : td.priority === 'HIGH' ? 'amber' : 'gray'}>{t(priorityLabel[td.priority])}</Badge>
+            {td.department && <Badge tone="blue">{locale === 'ar' ? td.department.nameAr : td.department.nameEn}</Badge>}
           </div>
         </div>
-        {isManagerView && <ManagerActions task={td} />}
+        <div className="flex flex-wrap items-start gap-2">
+          {td.permissions.canStart && <StartButton taskId={td.id} />}
+          {isManagerView && <ManagerActions task={td} />}
+        </div>
       </div>
 
       <div className="grid gap-4 sm:gap-6 lg:grid-cols-3">
@@ -288,6 +372,8 @@ export default function TaskDetailPage() {
           <Card title={t('Details')}>
             <div className="mb-5 grid grid-cols-2 gap-4 sm:grid-cols-3">
               <Meta icon={<UserRound className="h-4 w-4" />} label={t('Assignee')}>{td.assignee.name}</Meta>
+              <Meta icon={<UserRound className="h-4 w-4" />} label={t('Approver')}>{td.approver.name}</Meta>
+              <Meta icon={<UserRound className="h-4 w-4" />} label={t('Assigned by')}>{td.createdBy.name}</Meta>
               <Meta icon={<Calendar className="h-4 w-4" />} label={t('Deadline')}>
                 {formatDateTime(td.deadline)}
                 {td.status !== 'COMPLETED' && <span className={td.isOverdue ? 'block text-xs text-red-600' : 'block text-xs text-slate-500'}>{formatRelative(td.deadline)}</span>}
@@ -306,6 +392,9 @@ export default function TaskDetailPage() {
             )}
           </Card>
 
+          <SubmissionHistory task={td} />
+          <TransferHistory task={td} />
+          <ExtensionHistory task={td} />
           <Card title={t('Replies ({n})', { n: comments.data?.length ?? 0 })}>
             {comments.isLoading ? (
               <Spinner />
@@ -339,7 +428,7 @@ export default function TaskDetailPage() {
                         onClick={() => setCompleting(c)}
                         className={clsx('min-h-10 rounded-md px-4 text-sm font-medium transition', completing === c ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500')}
                       >
-                        {t(c ? 'Complete task' : 'Reply')}
+                        {t(c ? 'Submit completion' : 'Reply')}
                       </button>
                     ))}
                   </div>
@@ -351,6 +440,8 @@ export default function TaskDetailPage() {
         </div>
 
         <div className="min-w-0 space-y-4 sm:space-y-6">
+          <WorkflowPanel task={td} />
+          <TimeAccounting task={td} />
           {td.permissions.canRate && <RatingPanel task={td} />}
           <Card title={<span className="inline-flex items-center gap-2"><History className="h-4 w-4" aria-hidden /> {t('History')}</span>}>
             {history.data ? <HistoryList items={history.data} /> : <Spinner />}

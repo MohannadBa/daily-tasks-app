@@ -91,6 +91,8 @@ services:
       PORT: 3000
       AUTH_MODE: local
       JWT_SECRET: ${JWT_SECRET:-local-development-only-secret-change-me-0123456789}
+      # Personal-task field encryption key (AES-256-GCM). Local value only; Secrets Manager in AWS.
+      PERSONAL_DATA_KEY: ${PERSONAL_DATA_KEY:-local-development-only-personal-data-key-0123456789}
       # Where browsers reach LocalStack S3 for pre-signed URLs. Use your LAN IP when testing on a phone.
       S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:4566}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3001}
@@ -118,6 +120,8 @@ services:
       WEB_PUSH_VAPID_PRIVATE_KEY: ${WEB_PUSH_VAPID_PRIVATE_KEY:-redly1NP9qg_UG-mnMJ7hDECSGG9cAjXq8OLDvGtvfM}
       WEB_PUSH_SUBJECT: ${WEB_PUSH_SUBJECT:-mailto:admin@dailytasks.local}
       LOCAL_SCHEDULER_POLL_INTERVAL_MS: 5000
+      # PDF reports via the image's Debian Chromium (CHROMIUM_PATH is set in the Dockerfile).
+      REPORTS_ENABLED: "true"
     # Lets the worker reach a fake push service on the host (smoke test). Docker Desktop has this built in.
     extra_hosts:
       - "host.docker.internal:host-gateway"

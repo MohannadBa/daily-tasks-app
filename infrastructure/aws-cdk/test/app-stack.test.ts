@@ -143,4 +143,25 @@ describe('AppStack', () => {
   it('alarms on the dead-letter queue', () => {
     prod.hasResourceProperties('AWS::CloudWatch::Alarm', { AlarmDescription: 'Messages landed in the events dead-letter queue' });
   });
+  it('enterprise: personal-data key is a retained secret injected into the API only', () => {
+    prod.hasResource('AWS::SecretsManager::Secret', { DeletionPolicy: 'Retain', Properties: Match.objectLike({ Name: Match.stringLikeRegexp('personal-data-key') }) });
+    const defs = Object.values(prod.findResources('AWS::ECS::TaskDefinition')).flatMap(
+      (r) => (r as { Properties: { ContainerDefinitions: Array<{ Name: string; Secrets?: Array<{ Name: string }> }> } }).Properties.ContainerDefinitions,
+    );
+    const holders = defs.filter((c) => c.Secrets?.some((x) => x.Name === 'PERSONAL_DATA_KEY')).map((c) => c.Name);
+    expect(holders).toEqual(['api']);
+  });
+
+  it('enterprise: API may set temporary passwords and revoke sessions in Cognito', () => {
+    const policies = JSON.stringify(prod.findResources('AWS::IAM::Policy'));
+    expect(policies).toContain('cognito-idp:AdminSetUserPassword');
+    expect(policies).toContain('cognito-idp:AdminUserGlobalSignOut');
+  });
+
+  it('enterprise: worker has memory for Chromium and reports expire', () => {
+    prod.hasResourceProperties('AWS::ECS::TaskDefinition', { Family: Match.stringLikeRegexp('Worker'), Memory: '2048' });
+    prod.hasResourceProperties('AWS::S3::Bucket', {
+      LifecycleConfiguration: { Rules: Match.arrayWith([Match.objectLike({ Prefix: 'reports/', ExpirationInDays: 8, Status: 'Enabled' })]) },
+    });
+  });
 });

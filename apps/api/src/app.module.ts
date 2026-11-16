@@ -4,9 +4,14 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AccessModule } from './access/access.service';
 import { AttachmentsModule } from './attachments/attachments.controller';
 import { AuthModule } from './auth/auth.module';
+import { ApiExceptionFilter } from './common/errors';
 import { PrismaExceptionFilter } from './common/prisma-exception.filter';
 import { CompanyModule } from './company/company.controller';
 import { ConfigModule } from './config/config.module';
+import { DepartmentsModule } from './departments/departments.controller';
+import { DocumentsModule } from './documents/documents.controller';
+import { PersonalTasksModule } from './personal/personal-tasks.controller';
+import { ReportsModule } from './reports/reports.controller';
 import { DashboardModule } from './dashboard/dashboard.controller';
 import { HealthModule } from './health/health.controller';
 import { NotificationsModule } from './notifications/notifications.controller';
@@ -31,6 +36,10 @@ import { UsersModule } from './users/users.controller';
     AccessModule,
     AuthModule,
     UsersModule,
+    DepartmentsModule,
+    DocumentsModule,
+    PersonalTasksModule,
+    ReportsModule,
     ProjectsModule,
     AttachmentsModule,
     TasksModule,
@@ -44,6 +53,7 @@ import { UsersModule } from './users/users.controller';
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_FILTER, useClass: ApiExceptionFilter },
     { provide: APP_FILTER, useClass: PrismaExceptionFilter },
   ],
 })

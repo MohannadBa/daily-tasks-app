@@ -1,5 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { completeTaskSchema, ratingSchema, uploadRequestSchema, createTaskSchema, updateCompanySettingsSchema } from './index';
+import {
+  completeTaskSchema,
+  createTaskSchema,
+  decisionReasonSchema,
+  documentUploadSchema,
+  extensionDecisionSchema,
+  extensionRequestSchema,
+  inviteUserSchema,
+  ratingSchema,
+  rejectSubmissionSchema,
+  reportRequestSchema,
+  submitTaskSchema,
+  transferDeclineSchema,
+  transferRequestSchema,
+  updateCompanySettingsSchema,
+  uploadRequestSchema,
+} from './index';
 
 describe('completeTaskSchema', () => {
   it('rejects empty and whitespace-only completion comments', () => {
@@ -41,9 +57,54 @@ describe('uploadRequestSchema', () => {
 
 describe('createTaskSchema', () => {
   it('requires timezone-aware ISO deadlines', () => {
-    const base = { projectId: crypto.randomUUID(), assigneeId: crypto.randomUUID(), title: 'T' };
+    const base = { projectId: crypto.randomUUID(), departmentId: crypto.randomUUID(), assigneeId: crypto.randomUUID(), title: 'T' };
     expect(createTaskSchema.safeParse({ ...base, deadline: '2030-01-01T10:00:00Z' }).success).toBe(true);
     expect(createTaskSchema.safeParse({ ...base, deadline: 'tomorrow' }).success).toBe(false);
+  });
+  it('requires a department and defaults priority to MEDIUM', () => {
+    const base = { projectId: crypto.randomUUID(), assigneeId: crypto.randomUUID(), title: 'T', deadline: '2030-01-01T10:00:00Z' };
+    expect(createTaskSchema.safeParse(base).success).toBe(false);
+    expect(createTaskSchema.parse({ ...base, departmentId: crypto.randomUUID() }).priority).toBe('MEDIUM');
+    expect(createTaskSchema.safeParse({ ...base, departmentId: crypto.randomUUID(), priority: 'CRITICAL' }).success).toBe(false);
+  });
+});
+
+describe('enterprise workflow schemas', () => {
+  it('submission comment and rejection / return / decline reasons are mandatory', () => {
+    expect(submitTaskSchema.safeParse({ comment: '   ' }).success).toBe(false);
+    expect(submitTaskSchema.parse({ comment: ' done ' })).toEqual({ comment: 'done', attachmentIds: [] });
+    expect(rejectSubmissionSchema.safeParse({}).success).toBe(false);
+    expect(rejectSubmissionSchema.safeParse({ reason: ' ' }).success).toBe(false);
+    expect(decisionReasonSchema.safeParse({ reason: 'fix labels' }).success).toBe(true);
+    expect(transferDeclineSchema.safeParse({}).success).toBe(false);
+    expect(transferRequestSchema.safeParse({ toUserId: crypto.randomUUID(), reason: '' }).success).toBe(false);
+  });
+  it('extension: minutes xor deadline, bounded; partial needs minutes; reject needs a note', () => {
+    expect(extensionRequestSchema.safeParse({ requestedMinutes: 60, reason: 'rain' }).success).toBe(true);
+    expect(extensionRequestSchema.safeParse({ requestedMinutes: 5, reason: 'rain' }).success).toBe(false);
+    expect(extensionRequestSchema.safeParse({ requestedMinutes: 60, requestedDeadline: '2030-01-01T10:00:00Z', reason: 'x' }).success).toBe(false);
+    expect(extensionRequestSchema.safeParse({ reason: 'x' }).success).toBe(false);
+    expect(extensionDecisionSchema.safeParse({ decision: 'PARTIAL' }).success).toBe(false);
+    expect(extensionDecisionSchema.safeParse({ decision: 'REJECT' }).success).toBe(false);
+    expect(extensionDecisionSchema.safeParse({ decision: 'REJECT', note: 'no' }).success).toBe(true);
+  });
+  it('invited users need exactly one primary department', () => {
+    const base = { email: 'a@b.co', name: 'A', role: 'EMPLOYEE' };
+    const d = () => crypto.randomUUID();
+    expect(inviteUserSchema.safeParse({ ...base, departments: [{ departmentId: d(), isPrimary: true }, { departmentId: d(), isPrimary: true }] }).success).toBe(false);
+    expect(inviteUserSchema.safeParse({ ...base, departments: [{ departmentId: d() }] }).success).toBe(false);
+    expect(inviteUserSchema.safeParse({ ...base, departments: [{ departmentId: d(), isPrimary: true }] }).success).toBe(true);
+    expect(inviteUserSchema.safeParse({ ...base, role: 'COMPANY_ADMIN' }).success).toBe(false);
+  });
+  it('documents validate MIME type against the extension; reports cap the range', () => {
+    const doc = { title: 'Plan', categoryId: crypto.randomUUID(), fileName: 'plan.pdf', contentType: 'application/pdf', sizeBytes: 100 };
+    expect(documentUploadSchema.safeParse(doc).success).toBe(true);
+    expect(documentUploadSchema.safeParse({ ...doc, fileName: 'plan.exe' }).success).toBe(false);
+    expect(documentUploadSchema.safeParse({ ...doc, fileName: '../plan.pdf' }).success).toBe(false);
+    const r = { type: 'PROJECTS', projectIds: [crypto.randomUUID()], from: '2030-01-01T00:00:00Z' };
+    expect(reportRequestSchema.safeParse({ ...r, to: '2030-06-01T00:00:00Z' }).success).toBe(true);
+    expect(reportRequestSchema.safeParse({ ...r, to: '2031-06-01T00:00:00Z' }).success).toBe(false);
+    expect(reportRequestSchema.safeParse({ ...r, to: '2029-06-01T00:00:00Z' }).success).toBe(false);
   });
 });
 

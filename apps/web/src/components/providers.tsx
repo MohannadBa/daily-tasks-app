@@ -81,5 +81,5 @@ export function useMe(): CurrentUser {
 /** True for admins and users who manage at least one project. */
 export function useIsManager() {
   const me = useMe();
-  return me.role === 'COMPANY_ADMIN' || me.managedProjectIds.length > 0;
+  return me.role === 'ADMIN' || me.managedProjectIds.length > 0;
 }

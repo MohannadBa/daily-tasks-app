@@ -95,7 +95,7 @@ async function waitFor(fn, what, timeoutMs = 30000) {
 }
 
 console.info('DailyTasks docker smoke test');
-let manager, employee, otherEmployee, task, attachmentId;
+let manager, employee, otherEmployee, task, attachmentId, departmentId, submissionId;
 
 await step('API and web health checks', async () => {
   assert((await fetch(API.replace('/api/v1', '/health'))).ok, 'api /health');
@@ -141,10 +141,15 @@ await step('employee enables Web Push on two devices (one will report 410 Gone)'
   assert(evil.status === 400, 'non push-service endpoint must be rejected');
 });
 
-await step('manager creates a task (deadline in 90 minutes)', async () => {
+await step('manager creates a task (deadline in 90 minutes) in the employee\'s department', async () => {
   const projectId = manager.user.managedProjectIds[0];
+  departmentId = employee.user.departments.find((d) => d.isPrimary).id;
+  const eligible = await call(manager.accessToken, 'GET', `/departments/${departmentId}/assignable-employees?projectId=${projectId}`);
+  assert(eligible.status === 200 && eligible.body.some((u) => u.id === employee.user.id), 'employee assignable in department');
   const r = await call(manager.accessToken, 'POST', '/tasks', {
     projectId,
+    departmentId,
+    priority: 'HIGH',
     assigneeId: employee.user.id,
     title: `Smoke test ${new Date().toISOString()}`,
     description: 'Created by docker smoke test',
@@ -201,22 +206,64 @@ await step('employee uploads a photo via pre-signed S3 URL (LocalStack)', async 
   assert(bad.status === 400, 'invalid type must be rejected');
 });
 
-await step('empty completion comment is rejected; completion with comment succeeds', async () => {
-  const bad = await call(employee.accessToken, 'POST', `/tasks/${task.id}/complete`, { comment: '  ' });
+await step('empty completion comment is rejected; submission with comment goes to PENDING_REVIEW', async () => {
+  const bad = await call(employee.accessToken, 'POST', `/tasks/${task.id}/submissions`, { comment: '  ' });
   assert(bad.status === 400, `expected 400, got ${bad.status}`);
-  const ok = await call(employee.accessToken, 'POST', `/tasks/${task.id}/complete`, { comment: 'Finished, photo attached', attachmentIds: [attachmentId] });
-  assert(ok.status === 200 && ok.body.status === 'COMPLETED' && ok.body.completedLate === false, `complete ${ok.status}`);
+  const ok = await call(employee.accessToken, 'POST', `/tasks/${task.id}/submissions`, { comment: 'Finished, photo attached', attachmentIds: [attachmentId] });
+  assert(ok.status === 201 && ok.body.status === 'PENDING' && ok.body.stage === 'MANAGER', `submit ${ok.status} ${JSON.stringify(ok.body)}`);
+  submissionId = ok.body.id;
+  const t = await call(employee.accessToken, 'GET', `/tasks/${task.id}`);
+  assert(t.body.status === 'PENDING_REVIEW' && t.body.time.paused === true, 'task pending review with paused clock');
+  const self = await call(employee.accessToken, 'POST', `/submissions/${submissionId}/approve`, {});
+  assert(self.status === 403, `employee must not self-approve (${self.status})`);
 });
 
-await step('manager receives TASK_COMPLETED notification and can download the attachment', async () => {
+await step('manager is notified (TASK_SUBMITTED), approves; employee notified (TASK_APPROVED); files registered as project documents', async () => {
   await waitFor(async () => {
     const r = await call(manager.accessToken, 'GET', '/notifications?pageSize=50');
-    return r.body.items.find((n) => n.taskId === task.id && n.type === 'TASK_COMPLETED');
-  }, 'TASK_COMPLETED notification');
-  const dl = await call(manager.accessToken, 'GET', `/attachments/${attachmentId}/download-url`);
-  assert(dl.status === 200, `download-url ${dl.status}`);
+    return r.body.items.find((n) => n.taskId === task.id && n.type === 'TASK_SUBMITTED');
+  }, 'TASK_SUBMITTED notification');
+  const ok = await call(manager.accessToken, 'POST', `/submissions/${submissionId}/approve`, { note: 'Approved by smoke test' });
+  assert(ok.status === 200 && ok.body.status === 'APPROVED', `approve ${ok.status} ${JSON.stringify(ok.body)}`);
+  const t = await call(employee.accessToken, 'GET', `/tasks/${task.id}`);
+  assert(t.body.status === 'COMPLETED' && t.body.completedLate === false, `completed on time (${t.body.status})`);
+  await waitFor(async () => {
+    const r = await call(employee.accessToken, 'GET', '/notifications?pageSize=50');
+    return r.body.items.find((n) => n.taskId === task.id && n.type === 'TASK_APPROVED');
+  }, 'TASK_APPROVED notification');
+  const docs = await call(manager.accessToken, 'GET', `/projects/${task.projectId}/documents?taskId=${task.id}`);
+  assert(docs.status === 200 && docs.body.total === 1 && docs.body.items[0].source === 'TASK_SUBMISSION', `document registered (${JSON.stringify(docs.body)})`);
+  const empDocs = await call(employee.accessToken, 'GET', `/documents/${docs.body.items[0].id}/download-url`);
+  assert(empDocs.status === 404, 'managers-only document hidden from employee');
+  const dl = await call(manager.accessToken, 'GET', `/documents/${docs.body.items[0].id}/download-url`);
+  assert(dl.status === 200, `document download-url ${dl.status}`);
   const file = await fetch(dl.body.url);
-  assert(file.ok && (await file.arrayBuffer()).byteLength === 204, 'downloaded bytes');
+  assert(file.ok && (await file.arrayBuffer()).byteLength === 204, 'downloaded bytes (same S3 object)');
+});
+
+await step('manager requests an Arabic PDF report; worker renders it with Chromium; download is a real PDF', async () => {
+  const r = await call(manager.accessToken, 'POST', '/reports', { type: 'TASK', taskId: task.id, locale: 'ar' });
+  assert(r.status === 201 && r.body.status === 'QUEUED', `report ${r.status} ${JSON.stringify(r.body)}`);
+  const job = await waitFor(async () => {
+    const j = await call(manager.accessToken, 'GET', `/reports/${r.body.id}`);
+    if (j.body.status === 'FAILED') throw new Error(`report failed: ${j.body.error}`);
+    return j.body.status === 'READY' ? j.body : null;
+  }, 'report READY', 90_000);
+  assert(job.sizeBytes > 5000, `pdf size ${job.sizeBytes}`);
+  const dl = await call(manager.accessToken, 'GET', `/reports/${r.body.id}/download-url`);
+  const pdf = Buffer.from(await (await fetch(dl.body.url)).arrayBuffer());
+  assert(pdf.subarray(0, 5).toString() === '%PDF-', 'downloaded file is a PDF');
+  const other = await call(employee.accessToken, 'GET', `/reports/${r.body.id}`);
+  assert(other.status === 404, 'reports are private to the requester');
+});
+
+await step('personal tasks are private to their owner', async () => {
+  const p = await call(employee.accessToken, 'POST', '/me/personal-tasks', { title: 'Smoke personal note' });
+  assert(p.status === 201, `personal create ${p.status}`);
+  const peek = await call(manager.accessToken, 'GET', `/me/personal-tasks/${p.body.id}`);
+  assert(peek.status === 404, 'manager cannot read personal task');
+  const del = await call(employee.accessToken, 'DELETE', `/me/personal-tasks/${p.body.id}`);
+  assert(del.status === 204, `personal delete ${del.status}`);
 });
 
 await step('manager rates the task; employee cannot see ratings', async () => {
@@ -242,6 +289,7 @@ await step('deadline passes -> local scheduler + worker send TASK_OVERDUE to emp
   const projectId = manager.user.managedProjectIds[0];
   const r = await call(manager.accessToken, 'POST', '/tasks', {
     projectId,
+    departmentId,
     assigneeId: employee.user.id,
     title: `Overdue smoke ${Date.now()}`,
     deadline: new Date(Date.now() + 60_000).toISOString(),

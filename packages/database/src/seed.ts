@@ -6,6 +6,7 @@
  * All demo accounts share the password in SEED_DEMO_PASSWORD (default: Password123!).
  */
 import { PrismaClient, ProjectRole, TaskStatus, UserRole } from '@prisma/client';
+import { backfillAllLedgers, ensureCompanyDefaults } from './ledger-backfill';
 import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
@@ -13,7 +14,7 @@ const prisma = new PrismaClient();
 const COMPANY_ID = '00000000-0000-4000-8000-000000000001';
 
 const users = [
-  { email: 'admin@dailytasks.local', name: 'Amal Admin', role: UserRole.COMPANY_ADMIN, locale: 'en' },
+  { email: 'admin@dailytasks.local', name: 'Amal Admin', role: UserRole.ADMIN, locale: 'en' },
   { email: 'manager1@dailytasks.local', name: 'Mona Manager', role: UserRole.PROJECT_MANAGER, locale: 'en' },
   { email: 'manager2@dailytasks.local', name: 'Khalid Manager', role: UserRole.PROJECT_MANAGER, locale: 'ar' },
   { email: 'employee1@dailytasks.local', name: 'Omar Employee', role: UserRole.EMPLOYEE, locale: 'ar' },
@@ -36,6 +37,9 @@ async function main() {
     create: { id: COMPANY_ID, name: 'شركة الراسيات', timezone: 'Asia/Riyadh' },
   });
 
+  await ensureCompanyDefaults(prisma, COMPANY_ID);
+  const dept = Object.fromEntries((await prisma.department.findMany({ where: { companyId: COMPANY_ID } })).map((d) => [d.code, d.id]));
+
   const byEmail: Record<string, string> = {};
   for (const u of users) {
     const row = await prisma.user.upsert({
@@ -44,6 +48,21 @@ async function main() {
       create: { ...u, companyId: COMPANY_ID, passwordHash },
     });
     byEmail[u.email] = row.id;
+  }
+  // Department memberships (demo): engineers in Engineering Offices, others in Project Management.
+  const deptOf: Record<string, string[]> = {
+    'manager1@dailytasks.local': ['PROJECT_MANAGEMENT'],
+    'manager2@dailytasks.local': ['PROJECT_MANAGEMENT'],
+    'employee1@dailytasks.local': ['PROJECT_MANAGEMENT', 'ENGINEERING_OFFICES'],
+    'employee2@dailytasks.local': ['PROJECT_MANAGEMENT'],
+    'employee3@dailytasks.local': ['ENGINEERING_OFFICES'],
+    'employee4@dailytasks.local': ['MARKETING'],
+  };
+  for (const [email, codes] of Object.entries(deptOf)) {
+    await prisma.departmentMembership.createMany({
+      data: codes.map((code, i) => ({ departmentId: dept[code]!, userId: byEmail[email]!, isPrimary: i === 0 })),
+      skipDuplicates: true,
+    });
   }
 
   const existing = await prisma.project.count({ where: { companyId: COMPANY_ID } });
@@ -104,11 +123,17 @@ async function main() {
     const assigneeId = byEmail[t.assignee]!;
     const completedAt = t.completedAt ? new Date(t.completedAt) : null;
     const deadline = new Date(t.deadline);
+    const createdAt = new Date(now - 96 * hour);
     const task = await prisma.task.create({
       data: {
         projectId: t.projectId,
         assigneeId,
         createdById: t.creator,
+        approverId: t.creator,
+        departmentId: dept[deptOf[t.assignee]![0]!]!,
+        priority: t.deadline < now ? 'HIGH' : 'MEDIUM',
+        originalDeadline: deadline,
+        createdAt,
         title: t.title,
         description: t.description,
         deadline,
@@ -116,7 +141,7 @@ async function main() {
         startedAt: t.status !== TaskStatus.ASSIGNED ? new Date(now - 80 * hour) : null,
         completedAt,
         completedLate: completedAt ? completedAt > deadline : null,
-        history: { create: [{ action: 'CREATED', actorId: t.creator, metadata: { assigneeId } }] },
+        history: { create: [{ action: 'CREATED', actorId: t.creator, metadata: { assigneeId, deadline: deadline.toISOString() }, createdAt }] },
       },
     });
     if (completedAt) {
@@ -140,6 +165,7 @@ async function main() {
       });
     }
   }
+  await backfillAllLedgers(prisma);
   console.info(`Seeded demo company with ${users.length} users, 2 projects and ${tasks.length} tasks.`);
 }
 

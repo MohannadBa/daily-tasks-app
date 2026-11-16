@@ -3,6 +3,7 @@ import { ensureDatabaseUrl, loadEnv, parsePushHosts, workerEnvSchema, type Worke
 import { PrismaClient } from '@dailytasks/database';
 import { errMsg, logger, setLogLevel } from './logger';
 import { cleanupAbandonedUploads, S3ObjectStore } from './attachments';
+import { ChromiumPdfRenderer, cleanupExpiredReports, processReport } from './reports';
 import { Notifier, pushMaintenance, RetryableDeliveryError } from './notifier';
 import { OutboxRelay } from './outbox-relay';
 import { EventProcessor } from './processor';
@@ -59,9 +60,13 @@ export function buildWorker(env: WorkerEnv, prisma: PrismaClient) {
       },
       queue,
     );
-  const processor = new EventProcessor(prisma, new Notifier(prisma, push, env.WEB_PUSH_CONCURRENCY), scheduler);
+  const notifier = new Notifier(prisma, push, env.WEB_PUSH_CONCURRENCY);
+  const store = new S3ObjectStore(env.S3_BUCKET, env.AWS_REGION, env.AWS_ENDPOINT_URL, env.S3_FORCE_PATH_STYLE);
+  const renderer = new ChromiumPdfRenderer(env.CHROMIUM_PATH, env.REPORT_RENDER_TIMEOUT_MS);
+  const renderReport = env.REPORTS_ENABLED ? (id: string) => processReport(prisma, store, renderer, notifier, id) : undefined;
+  const processor = new EventProcessor(prisma, notifier, scheduler, renderReport);
   const relay = new OutboxRelay(prisma, queue);
-  return { queue, push, local, processor, relay };
+  return { queue, push, local, processor, relay, store };
 }
 
 async function main() {
@@ -73,7 +78,7 @@ async function main() {
   }
   const prisma = new PrismaClient();
   await prisma.$connect();
-  const { queue, push, local, processor, relay } = buildWorker(env, prisma);
+  const { queue, push, local, processor, relay, store } = buildWorker(env, prisma);
 
   const controller = new AbortController();
   const { signal } = controller;
@@ -102,7 +107,8 @@ async function main() {
     loop('outbox-relay', env.OUTBOX_POLL_INTERVAL_MS, signal, () => relay.relayBatch()),
     loop('consumer', 1000, signal, consumer),
     loop('push-maintenance', 6 * 3600_000, signal, () => pushMaintenance(prisma)),
-    loop('attachment-cleanup', 3600_000, signal, () => cleanupAbandonedUploads(prisma, new S3ObjectStore(env.S3_BUCKET, env.AWS_REGION, env.AWS_ENDPOINT_URL, env.S3_FORCE_PATH_STYLE)).then(() => undefined)),
+    loop('attachment-cleanup', 3600_000, signal, () => cleanupAbandonedUploads(prisma, store).then(() => undefined)),
+    loop('report-cleanup', 3600_000, signal, () => cleanupExpiredReports(prisma, store).then(() => undefined)),
     loop('outbox-cleanup', 6 * 3600_000, signal, () => relay.cleanup()),
   ];
   if (local) loops.push(loop('local-scheduler', env.LOCAL_SCHEDULER_POLL_INTERVAL_MS, signal, () => local.fireDue()));
