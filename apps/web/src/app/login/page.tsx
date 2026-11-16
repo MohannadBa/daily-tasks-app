@@ -45,7 +45,7 @@ function LoginForm() {
       {!challenge ? (
         <>
           <Field label={t('Email')}>
-            <Input type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} />
+            <Input type="email" inputMode="email" autoComplete="username" autoCapitalize="none" autoCorrect="off" spellCheck={false} required value={email} onChange={(e) => setEmail(e.target.value)} />
           </Field>
           <Field label={t('Password')}>
             <Input type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
@@ -56,7 +56,7 @@ function LoginForm() {
           <Input type="password" autoComplete="new-password" required value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
         </Field>
       )}
-      <Button type="submit" loading={loading} className="w-full">
+      <Button type="submit" loading={loading} className="min-h-12 w-full text-base sm:text-sm">
         {t(challenge ? 'Set password & sign in' : 'Sign in')}
       </Button>
     </form>
@@ -66,20 +66,20 @@ function LoginForm() {
 export default function LoginPage() {
   const { t, locale, setLocale } = useT();
   return (
-    <div className="relative flex min-h-screen items-center justify-center px-4">
+    <div className="relative flex min-h-dvh items-center justify-center px-4 pb-[env(safe-area-inset-bottom)] pt-[calc(4rem+env(safe-area-inset-top))] sm:pt-0">
       <button
         onClick={() => setLocale(locale === 'ar' ? 'en' : 'ar')}
-        className="absolute end-4 top-4 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+        className="absolute end-4 top-[calc(1rem+env(safe-area-inset-top))] min-h-10 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
       >
         {locale === 'ar' ? 'English' : 'العربية'}
       </button>
       <div className="w-full max-w-sm">
         <div className="mb-8 text-center">
-          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-brand-600 text-lg font-bold text-white">DT</div>
+          <img src="/icon.svg" alt="" className="mx-auto mb-3 h-14 w-14 rounded-2xl shadow-sm" />
           <h1 className="text-2xl font-semibold text-slate-900">{t('Sign in to DailyTasks')}</h1>
-          <p className="mt-1 text-sm text-slate-500">{t('Manager portal')}</p>
+          <p className="mt-1 text-sm text-slate-500">{t('Your tasks, replies and deadlines in one place')}</p>
         </div>
-        <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
           <Suspense>
             <LoginForm />
           </Suspense>

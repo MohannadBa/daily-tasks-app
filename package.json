@@ -2,7 +2,7 @@
   "name": "dailytasks",
   "private": true,
   "version": "1.0.0",
-  "description": "DailyTasks - company task management platform (API, worker, web portal, mobile app)",
+  "description": "DailyTasks - company task management platform (API, worker, installable web app / PWA)",
   "packageManager": "pnpm@10.34.9",
   "engines": {
     "node": ">=22.12"
@@ -19,7 +19,6 @@
     "dev:api": "pnpm --filter @dailytasks/api run dev",
     "dev:worker": "pnpm --filter @dailytasks/worker run dev",
     "dev:web": "pnpm --filter @dailytasks/web run dev",
-    "dev:mobile": "pnpm --filter @dailytasks/mobile run start",
     "test:docker": "node scripts/docker-smoke-test.mjs",
     "cdk:synth": "pnpm --filter @dailytasks/aws-cdk run synth"
   },

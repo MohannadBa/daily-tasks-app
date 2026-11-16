@@ -1,6 +1,7 @@
 'use client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
+import { InstallCard } from '@/components/install-app';
 import { useMe } from '@/components/providers';
 import { Button, Card, ErrorBox, Field, Input, PageHeader, Select } from '@/components/ui';
 import { api } from '@/lib/api';
@@ -31,7 +32,7 @@ function Profile() {
             <option value="ar">العربية</option>
           </Select>
         </Field>
-        <Button type="submit" loading={save.isPending}>{t(save.isSuccess ? 'Saved' : 'Save')}</Button>
+        <Button type="submit" loading={save.isPending} className="w-full sm:w-auto">{t(save.isSuccess ? 'Saved' : 'Save')}</Button>
       </form>
     </Card>
   );
@@ -71,7 +72,7 @@ function CompanySettings({ editable }: { editable: boolean }) {
           <p className="mb-2 text-xs text-slate-500">{t('Employees get a push reminder at these times before a deadline. An overdue alert is always sent to the employee and managers. Up to 5.')}</p>
           <div className="flex flex-wrap gap-2">
             {PRESETS.map((p) => (
-              <label key={p.minutes} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-1.5 text-sm">
+              <label key={p.minutes} className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-slate-200 px-3 py-1.5 text-sm lg:min-h-0">
                 <input type="checkbox" disabled={!editable || (!offsets.includes(p.minutes) && offsets.length >= 5)} checked={offsets.includes(p.minutes)} onChange={() => toggle(p.minutes)} />
                 {t('{label} before', { label: t(p.label) })}
               </label>
@@ -90,9 +91,12 @@ export default function SettingsPage() {
   const { t } = useT();
   return (
     <>
-      <PageHeader title={t('Settings')} />
-      <div className="grid gap-6 lg:grid-cols-2">
+      <PageHeader title={t('Profile & settings')} />
+      <div className="grid gap-4 sm:gap-6 lg:grid-cols-2">
         <Profile />
+        <div id="install" className="scroll-mt-20">
+          <InstallCard />
+        </div>
         {isManager && <CompanySettings editable={me.role === 'COMPANY_ADMIN'} />}
       </div>
     </>

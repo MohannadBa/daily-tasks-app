@@ -4,6 +4,7 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import type { CurrentUser } from '@dailytasks/shared-types';
 import { api } from '@/lib/api';
 import { I18nProvider, LOCALE_COOKIE, useT, type Locale } from '@/lib/i18n';
+import { PwaInit } from '@/lib/pwa';
 
 export function Providers({ children, locale }: { children: ReactNode; locale: Locale }) {
   const [client] = useState(
@@ -16,6 +17,7 @@ export function Providers({ children, locale }: { children: ReactNode; locale: L
   );
   return (
     <QueryClientProvider client={client}>
+      <PwaInit />
       <I18nProvider initialLocale={locale}>{children}</I18nProvider>
     </QueryClientProvider>
   );

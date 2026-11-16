@@ -2,12 +2,14 @@
 
 Task management for one company: admins create projects and invite people, project managers assign tasks with deadlines and files, employees reply and complete tasks from their phone, and managers privately rate completed work.
 
+There is **no native mobile app**: one responsive Next.js web app serves desktop and phones, and installs to the iPhone/Android Home Screen as a PWA (see [docs/PWA.md](docs/PWA.md)).
+
 | Part | Tech | Status |
 |---|---|---|
 | API | NestJS 11, Prisma 6, PostgreSQL 16, Swagger | ✅ |
 | Worker | Node 22, SQS, EventBridge Scheduler, Expo Push | ✅ |
-| Manager portal | Next.js 15, Tailwind 4, React Query, English/Arabic (RTL) | ✅ |
-| Mobile app | Expo / React Native | ⏳ not built yet |
+| Web app (desktop + phones, installable PWA) | Next.js 15, Tailwind 4, React Query, English/Arabic (RTL), manifest + service worker | ✅ |
+| Push notifications | Expo Push today → Web Push migration pending | ⚠️ |
 | Infrastructure | Docker Compose (local), AWS CDK (ECS Fargate, RDS, S3, SQS, Cognito, CloudWatch) | ✅ synth-verified, not deployed |
 
 ## Quick start (Docker)
@@ -20,7 +22,7 @@ docker compose up --build        # first run: builds images, migrates, seeds dem
 
 | Service | URL |
 |---|---|
-| Manager portal | http://localhost:3001 |
+| Web app (all roles; installable) | http://localhost:3001 |
 | API | http://localhost:3000/api/v1 |
 | Swagger | http://localhost:3000/api/docs |
 | Health | http://localhost:3000/health |
@@ -65,5 +67,6 @@ pnpm cdk:synth       # synthesize AWS CloudFormation (no deployment)
 - [Architecture](docs/ARCHITECTURE.md) — components, flows, security model
 - [Database](docs/DATABASE.md) — schema design and constraints
 - [Testing](docs/TESTING.md) — test strategy and the critical scenarios
+- [PWA](docs/PWA.md) — installing on iPhone/Android, service worker, offline, mobile UI
 - [Deployment](docs/DEPLOYMENT.md) — AWS setup, staging/production, migrations
 - [Implementation plan](docs/IMPLEMENTATION_PLAN.md) — phases, status, remaining work

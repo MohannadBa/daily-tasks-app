@@ -54,7 +54,7 @@ export default function ProjectDetailPage() {
           </>
         }
       />
-      <div className="grid gap-6 lg:grid-cols-3">
+      <div className="grid gap-4 sm:gap-6 lg:grid-cols-3">
         <div className="min-w-0 lg:col-span-2">
           <Tabs
             value={view}
@@ -87,7 +87,7 @@ export default function ProjectDetailPage() {
                     <div className="flex items-center gap-2">
                       {pr && <Stars value={pr.averageRating} size={12} />}
                       {isAdmin && (
-                        <button aria-label={t('Remove {name}', { name: m.name })} onClick={() => confirm(t('Remove {name} from {project}?', { name: m.name, project: p.name })) && remove.mutate(m.userId)} className="text-slate-400 hover:text-red-600">
+                        <button aria-label={t('Remove {name}', { name: m.name })} onClick={() => confirm(t('Remove {name} from {project}?', { name: m.name, project: p.name })) && remove.mutate(m.userId)} className="-m-2 flex h-10 w-10 items-center justify-center rounded-lg text-slate-400 hover:text-red-600">
                           <Trash2 className="h-4 w-4" />
                         </button>
                       )}

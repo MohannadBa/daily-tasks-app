@@ -41,9 +41,9 @@ export function StarInput({ value, onChange, disabled }: { value: number; onChan
           disabled={disabled}
           onMouseEnter={() => setHover(i)}
           onClick={() => onChange(i)}
-          className="rounded p-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+          className="rounded p-1 focus:outline-none sm:p-0.5 focus-visible:ring-2 focus-visible:ring-brand-500"
         >
-          <Star className={clsx('h-7 w-7 transition', i <= shown ? 'fill-amber-400 text-amber-400' : 'text-slate-300')} aria-hidden />
+          <Star className={clsx('h-9 w-9 transition sm:h-7 sm:w-7', i <= shown ? 'fill-amber-400 text-amber-400' : 'text-slate-300')} aria-hidden />
         </button>
       ))}
     </div>

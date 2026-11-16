@@ -51,14 +51,14 @@ function TasksInner() {
       <Tabs value={view} onChange={(v) => setParam({ view: v === 'all' ? undefined : v })} items={tabs} />
       <Card>
         <form
-          className="mb-4 flex flex-wrap gap-3"
+          className="mb-4 grid grid-cols-[1fr_auto] gap-2 sm:flex sm:flex-wrap sm:gap-3"
           onSubmit={(e) => {
             e.preventDefault();
             setParam({ q: q.trim() || undefined });
           }}
         >
-          <Input className="max-w-xs" placeholder={t('Search tasks…')} value={q} onChange={(e) => setQ(e.target.value)} aria-label={t('Search tasks…')} />
-          <Select className="max-w-xs" value={projectId} onChange={(e) => setParam({ projectId: e.target.value || undefined })} aria-label="Filter by project">
+          <Input type="search" enterKeyHint="search" className="sm:max-w-xs" placeholder={t('Search tasks…')} value={q} onChange={(e) => setQ(e.target.value)} aria-label={t('Search tasks…')} />
+          <Select className="order-last col-span-2 sm:order-none sm:col-span-1 sm:max-w-xs" value={projectId} onChange={(e) => setParam({ projectId: e.target.value || undefined })} aria-label={t('Filter by project')}>
             <option value="">{t('All projects')}</option>
             {projects.data?.map((p) => (
               <option key={p.id} value={p.id}>
@@ -73,7 +73,7 @@ function TasksInner() {
         <ErrorBox error={tasks.error} />
         {tasks.isLoading ? <Spinner /> : tasks.data && <TaskTable tasks={tasks.data.items} />}
         {tasks.data && tasks.data.total > tasks.data.pageSize && (
-          <div className="mt-4 flex items-center justify-between text-sm text-slate-500">
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm text-slate-500">
             <span>
               {t('{total} tasks · page {page} of {pages}', { total: tasks.data.total, page, pages: totalPages })}
             </span>

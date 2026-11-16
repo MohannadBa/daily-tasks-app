@@ -3,19 +3,18 @@
 Guidance for AI agents and engineers working in this repository.
 
 ## What this is
-Company task-management platform: managers assign tasks to employees (one assignee per task), employees reply/attach files and complete tasks from the mobile app, managers privately rate completed work (1–5 stars). Modular monolith: **NestJS API** + separate **worker**, **Next.js** manager portal, **Expo** mobile app (not built yet), **PostgreSQL/Prisma**, AWS (Cognito, S3, SQS, EventBridge Scheduler, ECS Fargate, RDS) via **CDK**.
+Company task-management platform: managers assign tasks to employees (one assignee per task), employees reply/attach files and complete tasks from their phones, managers privately rate completed work (1–5 stars). Modular monolith: **NestJS API** + separate **worker**, one **Next.js** web app for every role and device (responsive, installable **PWA**; there is **no native mobile app**), **PostgreSQL/Prisma**, AWS (Cognito, S3, SQS, EventBridge Scheduler, ECS Fargate, RDS) via **CDK**.
 
 ## Layout
 ```
 apps/api            NestJS REST API (/api/v1, Swagger /api/docs)
-apps/worker         Outbox relay, SQS consumer, notifications + Expo push, deadline scheduler
-apps/web            Next.js 15 portal (App Router, Tailwind 4, BFF proxy at /bff, en/ar + RTL)
-apps/mobile         Expo app — placeholder package only (scripts stubbed; see scriptsWhenImplemented)
+apps/worker         Outbox relay, SQS consumer, notifications + push (Expo today; Web Push migration pending), deadline scheduler
+apps/web            Next.js 15 web app + PWA (App Router, Tailwind 4, BFF proxy at /bff, en/ar + RTL, manifest, public/sw.js)
 packages/database   Prisma schema, migrations, seed, outbox event contracts
 packages/config     Product constants + zod env schemas (api/worker)
 packages/validation zod request schemas shared by API and clients
 packages/shared-types DTO/enum types
-packages/api-client typed fetch client (web + mobile)
+packages/api-client typed fetch client (web app)
 infrastructure/aws-cdk  Registry + staging/production stacks
 docker/             Dockerfiles, LocalStack + Postgres init
 scripts/            docker-smoke-test.mjs, push-images.sh
@@ -49,6 +48,8 @@ Demo logins (seed, local only): `manager1@dailytasks.local` / `employee1@dailyta
 - New domain event: add to `OutboxEventType` (packages/database/src/events.ts), handle in `apps/worker/src/processor.ts`, add EN+AR text in `apps/worker/src/messages.ts`.
 - Schema change: edit `schema.prisma`, `npx prisma migrate dev --name <x>` in packages/database (DATABASE_URL → localhost:5433), add CHECK constraints by hand when needed.
 - Web strings: wrap in `t('English text')` from `useT()` and add the Arabic entry in `apps/web/src/lib/i18n.tsx`. Use logical Tailwind classes (`ms-/me-/ps-/pe-/start-/end-/text-start`), never `ml-/mr-/left-/right-`.
+- PWA (see docs/PWA.md): `src/app/manifest.ts`, `public/sw.js` (bump `VERSION` on policy/precache changes), `public/offline.html`, `src/lib/pwa.ts`. The service worker must **never cache authenticated HTML or `/bff`/`/session` responses**. New public files that must load signed-out (icons, manifest, SW) need excluding in the `middleware.ts` matcher. Keep `htmlLimitedBots: /.*/` in `next.config.ts` (otherwise metadata streams into `<body>` and iOS/Chrome ignore the manifest + apple tags). Regenerate icons with `node scripts/generate-icons.mjs` in apps/web.
+- Mobile UI: phones (< lg) get the top app bar + bottom tab bar + "More" sheet in `components/app-shell.tsx`, desktop keeps the sidebar. Use `min-h-11`/16px inputs for touch, card lists instead of tables below `md`, `env(safe-area-inset-*)` for fixed bars, and check 390 px width in EN and AR (no horizontal overflow).
 - Tests: API integration tests in `apps/api/test/*.e2e-spec.ts` (real Postgres, fake S3); worker tests in `apps/worker/test`.
 
 ## AWS

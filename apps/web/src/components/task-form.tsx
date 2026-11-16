@@ -105,14 +105,14 @@ export function TaskForm({
         <Textarea rows={6} maxLength={10000} value={description} onChange={(e) => setDescription(e.target.value)} />
       </Field>
       <Field label={t('Deadline')} hint={t('Date and time in your local timezone')}>
-        <Input type="datetime-local" required value={deadline} onChange={(e) => setDeadline(e.target.value)} className="max-w-xs" />
+        <Input type="datetime-local" required value={deadline} onChange={(e) => setDeadline(e.target.value)} className="sm:max-w-xs" />
       </Field>
       <div>
         <FilePicker files={files} onChange={setFiles} onError={setFileError} />
         {fileError && <p className="mt-1 text-xs text-red-600">{fileError}</p>}
       </div>
       <div className="flex justify-end">
-        <Button type="submit" loading={saving}>
+        <Button type="submit" loading={saving} className="w-full sm:w-auto">
           {t(submitLabel)}
         </Button>
       </div>

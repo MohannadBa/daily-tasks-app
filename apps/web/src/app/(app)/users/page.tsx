@@ -32,21 +32,21 @@ export default function UsersPage() {
   return (
     <>
       <PageHeader title={t('Team')} subtitle={t('Invite people and manage their company role. Add them to projects from the project page.')} />
-      <div className="grid gap-6 lg:grid-cols-3">
+      <div className="grid gap-4 sm:gap-6 lg:grid-cols-3">
         <Card title={t('Members')} className="lg:col-span-2">
           <ErrorBox error={users.error ?? update.error} />
           {users.isLoading ? (
             <Spinner />
           ) : (
-            <ul className="-mx-5 divide-y divide-slate-100">
+            <ul className="-mx-4 divide-y divide-slate-100 sm:-mx-5">
               {users.data?.map((u) => (
-                <li key={u.id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
-                  <div>
+                <li key={u.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-5">
+                  <div className="min-w-0">
                     <p className="text-sm font-medium text-slate-900">{u.name} {!u.isActive && <Badge tone="red">{t('Inactive')}</Badge>}</p>
-                    <p className="text-xs text-slate-500">{u.email}</p>
+                    <p className="break-all text-xs text-slate-500">{u.email}</p>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <Select className="w-44" value={u.role} disabled={u.id === me.id} onChange={(e) => update.mutate({ id: u.id, role: e.target.value as UserRole })} aria-label={t('Role')}>
+                  <div className="flex w-full items-center gap-2 sm:w-auto">
+                    <Select className="flex-1 sm:w-44 sm:flex-none" value={u.role} disabled={u.id === me.id} onChange={(e) => update.mutate({ id: u.id, role: e.target.value as UserRole })} aria-label={t('Role')}>
                       {Object.entries(roleLabel).map(([v, l]) => <option key={v} value={v}>{t(l)}</option>)}
                     </Select>
                     {u.id !== me.id && (

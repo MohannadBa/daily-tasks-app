@@ -44,11 +44,11 @@ export default function ProjectsPage() {
       ) : projects.data?.length === 0 ? (
         <Empty title={t('No projects yet')} />
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3">
           {projects.data?.map((p) => (
-            <Link key={p.id} href={`/projects/${p.id}`} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-brand-500/40 hover:shadow">
+            <Link key={p.id} href={`/projects/${p.id}`} className="min-w-0 rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition hover:border-brand-500/40 hover:shadow active:bg-slate-50 sm:p-5">
               <div className="flex items-start justify-between gap-2">
-                <h2 className="font-semibold text-slate-900">{p.name}</h2>
+                <h2 className="min-w-0 break-words font-semibold text-slate-900">{p.name}</h2>
                 {p.status === 'ARCHIVED' ? <Badge>{t('Archived')}</Badge> : p.myRole && <Badge tone="blue">{t(p.myRole === 'MANAGER' ? 'Manager' : 'Member')}</Badge>}
               </div>
               {p.description && <p className="mt-1 line-clamp-2 text-sm text-slate-500">{p.description}</p>}

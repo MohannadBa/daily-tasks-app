@@ -2,7 +2,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { setFormatLocale } from './format';
 
-export type Locale = 'en' | 'ar';
+import type { Locale } from './locale';
+export type { Locale };
 export const LOCALE_COOKIE = 'dt_locale';
 
 /**
@@ -214,6 +215,39 @@ const ar: Record<string, string> = {
     'لوضع التطوير المحلي فقط. في الإنتاج يرسل Cognito دعوة بكلمة مرور مؤقتة عبر البريد.',
   'Send invite': 'إرسال الدعوة',
   'Invited ✓': 'تمت الدعوة ✓',
+  // mobile app shell
+  Home: 'الرئيسية',
+  Alerts: 'التنبيهات',
+  More: 'المزيد',
+  Back: 'رجوع',
+  Main: 'التنقل الرئيسي',
+  'Change language': 'تغيير اللغة',
+  'Profile & settings': 'الملف الشخصي والإعدادات',
+  'Filter by project': 'تصفية حسب المشروع',
+  'Reply or complete': 'رد أو إكمال',
+  'Your tasks, replies and deadlines in one place': 'مهامك وردودك ومواعيدك النهائية في مكان واحد',
+  Close: 'إغلاق',
+  // install (PWA)
+  'Install the app': 'تثبيت التطبيق',
+  'Install app': 'تثبيت التطبيق',
+  'Install DailyTasks on this device': 'ثبّت DailyTasks على هذا الجهاز',
+  'Open it from your Home Screen like an app and get task alerts.': 'افتحه من الشاشة الرئيسية كأي تطبيق واحصل على تنبيهات المهام.',
+  'Not now': 'ليس الآن',
+  'Show me how': 'أرني الطريقة',
+  'Hide steps': 'إخفاء الخطوات',
+  'DailyTasks is installed and running as an app on this device.': 'تم تثبيت DailyTasks ويعمل كتطبيق على هذا الجهاز.',
+  'Add DailyTasks to your Home Screen to open it full-screen, like a native app.': 'أضف DailyTasks إلى الشاشة الرئيسية لفتحه بملء الشاشة كتطبيق أصلي.',
+  'iPhone & iPad (Safari)': 'آيفون وآيباد (Safari)',
+  'Android (Chrome)': 'أندرويد (Chrome)',
+  'Open this page in Safari (installing works from Safari on iPhone and iPad).': 'افتح هذه الصفحة في Safari (التثبيت يتم من Safari على آيفون وآيباد).',
+  'Then tap Share and choose Add to Home Screen.': 'ثم اضغط على مشاركة واختر «إضافة إلى الشاشة الرئيسية».',
+  'Tap the Share button': 'اضغط على زر المشاركة',
+  'in the Safari toolbar.': 'في شريط أدوات Safari.',
+  'Scroll down and tap Add to Home Screen': 'مرّر للأسفل واضغط «إضافة إلى الشاشة الرئيسية»',
+  'Tap Add. Open DailyTasks from your Home Screen.': 'اضغط «إضافة»، ثم افتح DailyTasks من الشاشة الرئيسية.',
+  'Open the browser menu': 'افتح قائمة المتصفح',
+  'Tap Install app (or Add to Home screen).': 'اضغط «تثبيت التطبيق» (أو «إضافة إلى الشاشة الرئيسية»).',
+  'Confirm. DailyTasks opens like a regular app.': 'أكّد. سيفتح DailyTasks كتطبيق عادي.',
 };
 
 const dictionaries: Record<Locale, Record<string, string>> = { en: {}, ar };

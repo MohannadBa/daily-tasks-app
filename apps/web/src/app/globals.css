@@ -15,3 +15,47 @@ body {
   background: #f6f8fb;
   color: #0f172a;
 }
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  min-height: 100dvh;
+  /* Never let a wide element push the page sideways on phones. */
+  overflow-x: clip; /* clip (not hidden) keeps position: sticky working */
+}
+
+/* Remove the 300ms tap delay / double-tap zoom on controls (pinch zoom stays available). */
+a,
+button,
+input,
+select,
+textarea,
+label,
+[role="tab"],
+[role="radio"] {
+  touch-action: manipulation;
+}
+
+/* Installed app: behave like a native app rather than a document. */
+@media (display-mode: standalone) {
+  body {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+  input,
+  textarea,
+  [contenteditable],
+  p,
+  li,
+  td,
+  h1,
+  h2 {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+}

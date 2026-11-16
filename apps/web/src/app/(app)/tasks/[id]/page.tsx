@@ -1,5 +1,6 @@
 'use client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import clsx from 'clsx';
 import { Calendar, CheckCircle2, Download, FileText, History, Pencil, RotateCcw, UserRound } from 'lucide-react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
@@ -17,17 +18,17 @@ import { useT } from '@/lib/i18n';
 function AttachmentList({ items }: { items: AttachmentDto[] }) {
   if (items.length === 0) return null;
   return (
-    <ul className="mt-2 flex flex-wrap gap-2">
+    <ul className="mt-2 grid gap-2 sm:flex sm:flex-wrap">
       {items.map((a) => (
-        <li key={a.id}>
+        <li key={a.id} className="min-w-0">
           <button
             onClick={() => void openAttachment(a.id)}
-            className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 hover:border-brand-500 hover:text-brand-700"
+            className="flex min-h-11 w-full items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-start text-sm text-slate-700 hover:border-brand-500 hover:text-brand-700 active:bg-slate-50 sm:inline-flex sm:min-h-0 sm:w-auto sm:py-1.5"
           >
-            <FileText className="h-4 w-4" aria-hidden />
-            <span className="max-w-[16rem] truncate">{a.fileName}</span>
-            <span className="text-xs text-slate-400">{formatBytes(a.sizeBytes)}</span>
-            <Download className="h-3.5 w-3.5" aria-hidden />
+            <FileText className="h-4 w-4 shrink-0" aria-hidden />
+            <span className="min-w-0 flex-1 truncate sm:max-w-[16rem]">{a.fileName}</span>
+            <span className="shrink-0 text-xs text-slate-400">{formatBytes(a.sizeBytes)}</span>
+            <Download className="h-4 w-4 shrink-0 sm:h-3.5 sm:w-3.5" aria-hidden />
           </button>
         </li>
       ))}
@@ -37,9 +38,9 @@ function AttachmentList({ items }: { items: AttachmentDto[] }) {
 
 function Meta({ icon, label, children }: { icon: ReactNode; label: string; children: ReactNode }) {
   return (
-    <div className="flex items-start gap-3">
+    <div className="flex min-w-0 items-start gap-3">
       <span className="mt-0.5 text-slate-400">{icon}</span>
-      <div>
+      <div className="min-w-0 break-words">
         <p className="text-xs uppercase tracking-wide text-slate-500">{label}</p>
         <div className="text-sm text-slate-900">{children}</div>
       </div>
@@ -189,13 +190,13 @@ function ManagerActions({ task }: { task: TaskDetailDto }) {
             <Textarea rows={2} required value={reason} onChange={(e) => setReason(e.target.value)} />
           </Field>
           <Field label={t('New deadline')}>
-            <Input type="datetime-local" required value={deadline} onChange={(e) => setDeadline(e.target.value)} className="max-w-xs" />
+            <Input type="datetime-local" required value={deadline} onChange={(e) => setDeadline(e.target.value)} className="sm:max-w-xs" />
           </Field>
           <Button size="sm" type="submit" loading={reopen.isPending}>{t('Reopen task')}</Button>
         </form>
       )}
       {mode === 'reassign' && (
-        <form className="flex flex-wrap items-end gap-3 rounded-lg bg-slate-50 p-4" onSubmit={(e) => { e.preventDefault(); reassign.mutate(); }}>
+        <form className="grid gap-3 rounded-lg bg-slate-50 p-4 sm:flex sm:flex-wrap sm:items-end" onSubmit={(e) => { e.preventDefault(); reassign.mutate(); }}>
           <ErrorBox error={reassign.error} />
           <Field label={t('New assignee')}>
             <Select required value={assigneeId} onChange={(e) => setAssigneeId(e.target.value)}>
@@ -246,7 +247,7 @@ function ReplyBox({ task, completion }: { task: TaskDetailDto; completion: boole
       <FilePicker files={files} onChange={setFiles} onError={setFileError} />
       {fileError && <p className="text-xs text-red-600">{fileError}</p>}
       <div className="flex justify-end">
-        <Button type="submit" loading={send.isPending} disabled={!body.trim()}>
+        <Button type="submit" loading={send.isPending} disabled={!body.trim()} className="w-full sm:w-auto">
           {completion ? (<><CheckCircle2 className="h-4 w-4" aria-hidden /> {t('Mark as completed')}</>) : t('Send reply')}
         </Button>
       </div>
@@ -268,11 +269,11 @@ export default function TaskDetailPage() {
   const isManagerView = td.permissions.canEdit || td.permissions.canReopen;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
+        <div className="min-w-0">
           <Link href={`/projects/${td.projectId}`} className="text-sm text-brand-700 hover:underline">{td.projectName}</Link>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">{td.title}</h1>
+          <h1 className="mt-1 break-words text-xl font-semibold tracking-tight text-slate-900 sm:text-2xl">{td.title}</h1>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <StatusBadge task={td} />
             {td.reopenCount > 0 && <Badge>{t('Reopened ×{n}', { n: td.reopenCount })}</Badge>}
@@ -281,10 +282,10 @@ export default function TaskDetailPage() {
         {isManagerView && <ManagerActions task={td} />}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-3">
-        <div className="min-w-0 space-y-6 lg:col-span-2">
+      <div className="grid gap-4 sm:gap-6 lg:grid-cols-3">
+        <div className="min-w-0 space-y-4 sm:space-y-6 lg:col-span-2">
           <Card title={t('Details')}>
-            <div className="mb-5 grid gap-4 sm:grid-cols-3">
+            <div className="mb-5 grid grid-cols-2 gap-4 sm:grid-cols-3">
               <Meta icon={<UserRound className="h-4 w-4" />} label={t('Assignee')}>{td.assignee.name}</Meta>
               <Meta icon={<Calendar className="h-4 w-4" />} label={t('Deadline')}>
                 {formatDateTime(td.deadline)}
@@ -295,7 +296,7 @@ export default function TaskDetailPage() {
                 {td.completedLate && <span className="block text-xs text-amber-700">{t('after the deadline')}</span>}
               </Meta>
             </div>
-            {td.description ? <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">{td.description}</p> : <p className="text-sm text-slate-400">{t('No description')}</p>}
+            {td.description ? <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-700">{td.description}</p> : <p className="text-sm text-slate-400">{t('No description')}</p>}
             {td.attachments.length > 0 && (
               <div className="mt-4">
                 <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{t('Instructions & reference files')}</p>
@@ -310,13 +311,13 @@ export default function TaskDetailPage() {
             ) : comments.data && comments.data.length > 0 ? (
               <ul className="space-y-4">
                 {comments.data.map((c) => (
-                  <li key={c.id} className={c.isCompletionNote ? 'rounded-lg border border-emerald-200 bg-emerald-50/50 p-4' : 'rounded-lg bg-slate-50 p-4'}>
+                  <li key={c.id} className={c.isCompletionNote ? 'rounded-lg border border-emerald-200 bg-emerald-50/50 p-3 sm:p-4' : 'rounded-lg bg-slate-50 p-3 sm:p-4'}>
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="text-sm font-medium text-slate-900">{c.author.name}</span>
                       <span className="text-xs text-slate-400">{formatDateTime(c.createdAt)}</span>
                     </div>
                     {c.isCompletionNote && <Badge tone="green">{t('Completion report')}</Badge>}
-                    <p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{c.body}</p>
+                    <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-700">{c.body}</p>
                     <AttachmentList items={c.attachments} />
                   </li>
                 ))}
@@ -327,9 +328,19 @@ export default function TaskDetailPage() {
             {td.permissions.canComment && (
               <div className="mt-6 border-t border-slate-100 pt-4">
                 {td.permissions.canComplete && (
-                  <div className="mb-3 flex gap-2">
-                    <Button size="sm" variant={completing ? 'ghost' : 'secondary'} onClick={() => setCompleting(false)}>{t('Reply')}</Button>
-                    <Button size="sm" variant={completing ? 'secondary' : 'ghost'} onClick={() => setCompleting(true)}>{t('Complete task')}</Button>
+                  <div className="mb-3 grid grid-cols-2 gap-1 rounded-lg bg-slate-100 p-1 sm:inline-grid" role="tablist" aria-label={t('Reply or complete')}>
+                    {[false, true].map((c) => (
+                      <button
+                        key={String(c)}
+                        type="button"
+                        role="tab"
+                        aria-selected={completing === c}
+                        onClick={() => setCompleting(c)}
+                        className={clsx('min-h-10 rounded-md px-4 text-sm font-medium transition', completing === c ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500')}
+                      >
+                        {t(c ? 'Complete task' : 'Reply')}
+                      </button>
+                    ))}
                   </div>
                 )}
                 <ReplyBox task={td} completion={completing && td.permissions.canComplete} />
@@ -338,7 +349,7 @@ export default function TaskDetailPage() {
           </Card>
         </div>
 
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-4 sm:space-y-6">
           {td.permissions.canRate && <RatingPanel task={td} />}
           <Card title={<span className="inline-flex items-center gap-2"><History className="h-4 w-4" aria-hidden /> {t('History')}</span>}>
             {history.data ? <HistoryList items={history.data} /> : <Spinner />}

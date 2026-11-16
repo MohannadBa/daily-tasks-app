@@ -9,12 +9,16 @@ export function middleware(req: NextRequest) {
   }
   if (!hasSession) {
     const url = new URL('/login', req.url);
-    if (pathname !== '/') url.searchParams.set('next', pathname);
+    // Keep deep links (e.g. /tasks/<id>?tab=x from a notification) across the login round-trip.
+    const target = pathname + req.nextUrl.search;
+    if (target !== '/') url.searchParams.set('next', target);
     return NextResponse.redirect(url);
   }
   return NextResponse.next();
 }
 
 export const config = {
-  matcher: ['/((?!bff|session|_next|favicon.ico|icon.svg|health).*)'],
+  // Public assets: API proxy, auth, Next internals, health, and the PWA files (manifest, service worker,
+  // offline shell, icons) — these must load without a session (install, offline, login screen).
+  matcher: ['/((?!bff|session|_next|health|favicon|icon.svg|icons/|apple-touch-icon|manifest.webmanifest|sw.js|offline.html).*)'],
 };

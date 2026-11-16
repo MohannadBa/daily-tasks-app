@@ -20,7 +20,8 @@ export function Button({
       disabled={props.disabled || loading}
       className={clsx(
         'inline-flex items-center justify-center gap-2 rounded-lg font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60',
-        size === 'sm' ? 'px-3 py-1.5 text-sm' : 'px-4 py-2 text-sm',
+        // Touch targets: >=40px (sm) / 44px (md) on phones, compact on desktop.
+        size === 'sm' ? 'min-h-10 px-3 py-1.5 text-sm lg:min-h-0' : 'min-h-11 px-4 py-2 text-[15px] sm:text-sm lg:min-h-0',
         variant === 'primary' && 'bg-brand-600 text-white hover:bg-brand-700',
         variant === 'secondary' && 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50',
         variant === 'danger' && 'bg-red-600 text-white hover:bg-red-700',
@@ -39,7 +40,7 @@ export function LinkButton({ href, children, variant = 'primary' }: { href: stri
     <Link
       href={href}
       className={clsx(
-        'inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition',
+        'inline-flex min-h-11 items-center justify-center gap-2 rounded-lg px-4 py-2 text-[15px] font-medium transition sm:text-sm lg:min-h-0',
         variant === 'primary' ? 'bg-brand-600 text-white hover:bg-brand-700' : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50',
       )}
     >
@@ -52,12 +53,12 @@ export function Card({ title, actions, children, className }: { title?: ReactNod
   return (
     <section className={clsx('min-w-0 rounded-xl border border-slate-200 bg-white shadow-sm', className)}>
       {(title || actions) && (
-        <header className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-5 py-3">
+        <header className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-3 sm:px-5">
           <h2 className="text-sm font-semibold text-slate-900">{title}</h2>
           {actions}
         </header>
       )}
-      <div className="p-5">{children}</div>
+      <div className="p-4 sm:p-5">{children}</div>
     </section>
   );
 }
@@ -86,7 +87,8 @@ export function Field({ label, hint, error, children }: { label: string; hint?: 
 }
 
 const inputCls =
-  'block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm placeholder:text-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/30 disabled:bg-slate-50';
+  // text-base (16px) on phones stops iOS Safari zooming into focused fields; min-h for touch.
+  'block w-full min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-base text-slate-900 shadow-sm placeholder:text-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/30 disabled:bg-slate-50 sm:text-sm min-h-11 lg:min-h-0';
 
 export const Input = (p: InputHTMLAttributes<HTMLInputElement>) => <input {...p} className={clsx(inputCls, p.className)} />;
 export const Textarea = (p: TextareaHTMLAttributes<HTMLTextAreaElement>) => <textarea rows={4} {...p} className={clsx(inputCls, p.className)} />;
@@ -122,9 +124,9 @@ export function Empty({ title, children }: { title: string; children?: ReactNode
 
 export function PageHeader({ title, subtitle, actions }: { title: string; subtitle?: ReactNode; actions?: ReactNode }) {
   return (
-    <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-slate-900">{title}</h1>
+    <div className="mb-4 flex flex-wrap items-end justify-between gap-3 sm:mb-6 sm:gap-4">
+      <div className="min-w-0">
+        <h1 className="break-words text-xl font-semibold tracking-tight text-slate-900 sm:text-2xl">{title}</h1>
         {subtitle && <p className="mt-1 text-sm text-slate-500">{subtitle}</p>}
       </div>
       {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
@@ -134,7 +136,7 @@ export function PageHeader({ title, subtitle, actions }: { title: string; subtit
 
 export function Tabs<T extends string>({ value, onChange, items }: { value: T; onChange: (v: T) => void; items: Array<{ value: T; label: string }> }) {
   return (
-    <div className="mb-4 flex gap-1 overflow-x-auto border-b border-slate-200" role="tablist">
+    <div className="-mx-4 mb-4 flex gap-1 overflow-x-auto border-b border-slate-200 px-4 [scrollbar-width:none] sm:mx-0 sm:px-0" role="tablist">
       {items.map((i) => (
         <button
           key={i.value}
@@ -142,7 +144,7 @@ export function Tabs<T extends string>({ value, onChange, items }: { value: T; o
           aria-selected={value === i.value}
           onClick={() => onChange(i.value)}
           className={clsx(
-            '-mb-px whitespace-nowrap border-b-2 px-3 py-2 text-sm font-medium',
+            '-mb-px min-h-11 whitespace-nowrap border-b-2 px-3 py-2 text-sm font-medium lg:min-h-0',
             value === i.value ? 'border-brand-600 text-brand-700' : 'border-transparent text-slate-500 hover:text-slate-700',
           )}
         >

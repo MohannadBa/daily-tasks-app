@@ -1,7 +1,7 @@
 # DailyTasks local development stack.
 #   docker compose up --build      build & run everything
 #   docker compose down            stop (volumes are kept)
-# The Expo mobile dev server runs on the host and talks to the API on http://<host-ip>:3000.
+# The web app (installable PWA) is served at http://localhost:3001; the REST API at http://localhost:3000.
 name: dailytasks
 
 x-aws-env: &aws-env
@@ -82,9 +82,9 @@ services:
       PORT: 3000
       AUTH_MODE: local
       JWT_SECRET: ${JWT_SECRET:-local-development-only-secret-change-me-0123456789}
-      # Where browsers/phones reach LocalStack S3 for pre-signed URLs. Use your LAN IP for a physical phone.
+      # Where browsers reach LocalStack S3 for pre-signed URLs. Use your LAN IP when testing on a phone.
       S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:4566}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3001,http://localhost:8081}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3001}
       SWAGGER_ENABLED: "true"
     ports:
       - "${API_PORT:-3000}:3000"

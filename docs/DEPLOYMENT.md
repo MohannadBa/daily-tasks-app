@@ -37,10 +37,10 @@ Sizing per environment is in `lib/config.ts` (staging: single-AZ `t4g.micro`, 1 
 ## Releases
 `push-images.sh` → `cdk deploy DailyTasks-<env> -c imageTag=<tag>` → run the migration task. ECS deployment circuit breakers roll back failed releases. Promote the same tag from staging to production.
 
-## Mobile push (when the Expo app is built)
-* `eas init` to obtain an EAS project id; configure APNs key (iOS) and FCM v1 service account (Android) in EAS credentials.
-* Optional: enable Expo "enhanced push security", store the access token in Secrets Manager and pass `<env>:expoAccessTokenSecretArn`.
-* Set `EXPO_PUBLIC_API_URL` to the `ApiUrl` stack output.
+## Installable web app (PWA)
+* Served by the `web` service. HTTPS on the ALB is required for install + service worker (any real domain with ACM works).
+* `/sw.js` is sent with `Cache-Control: no-cache` so new releases reach installed apps on their next launch; don't add CDN caching for it.
+* Push: the worker still uses Expo Push (`<env>:expoAccessTokenSecretArn` optional) until the Web Push migration, which will add a VAPID key pair in Secrets Manager. See docs/PWA.md.
 
 ## Security notes
 * No public S3 access; all object access is via short-lived pre-signed URLs issued after authorization.

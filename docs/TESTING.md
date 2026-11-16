@@ -6,10 +6,9 @@
 | API unit tests | `apps/api/src/**/*.spec.ts` | jest | — |
 | API integration / authorization tests | `apps/api/test/*.e2e-spec.ts` | jest + supertest | compose Postgres (`dailytasks_test`, recreated per run) |
 | Worker tests (fan-out, scheduling, outbox) | `apps/worker/test` | vitest | compose Postgres |
-| Web unit/component tests | `apps/web/src/**/*.test.ts(x)` | vitest + Testing Library | — |
+| Web unit/component tests (incl. PWA platform detection, locale resolution) | `apps/web/src/**/*.test.ts(x)` | vitest + Testing Library | — |
 | Infrastructure assertions | `infrastructure/aws-cdk/test` | vitest + CDK assertions | — |
 | Docker end-to-end smoke test | `scripts/docker-smoke-test.mjs` | node | running compose stack |
-| Mobile tests | — | — | not built yet |
 
 ```bash
 docker compose up -d postgres localstack

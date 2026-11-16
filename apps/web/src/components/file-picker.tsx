@@ -25,18 +25,18 @@ export function FilePicker({ files, onChange, onError }: { files: File[]; onChan
           e.target.value = '';
         }}
       />
-      <button type="button" onClick={() => ref.current?.click()} className="inline-flex items-center gap-1.5 text-sm font-medium text-brand-700 hover:text-brand-900">
+      <button type="button" onClick={() => ref.current?.click()} className="inline-flex min-h-11 items-center gap-1.5 text-sm font-medium text-brand-700 hover:text-brand-900 lg:min-h-0">
         <Paperclip className="h-4 w-4" aria-hidden /> {t('Attach files')}
       </button>
-      <span className="ms-2 text-xs text-slate-400">{t('Images, PDF, Office documents · up to {size} each', { size: formatBytes(MAX_FILE_BYTES) })}</span>
+      <span className="block text-xs text-slate-400 sm:ms-2 sm:inline">{t('Images, PDF, Office documents · up to {size} each', { size: formatBytes(MAX_FILE_BYTES) })}</span>
       {files.length > 0 && (
         <ul className="mt-2 space-y-1">
           {files.map((f, i) => (
-            <li key={`${f.name}-${i}`} className="flex items-center justify-between rounded-md bg-slate-50 px-3 py-1.5 text-sm">
-              <span className="truncate">
+            <li key={`${f.name}-${i}`} className="flex items-center justify-between gap-2 rounded-md bg-slate-50 py-1 ps-3 pe-1 text-sm">
+              <span className="min-w-0 truncate">
                 {f.name} <span className="text-xs text-slate-400">({formatBytes(f.size)})</span>
               </span>
-              <button type="button" aria-label={t('Remove {name}', { name: f.name })} onClick={() => onChange(files.filter((_, j) => j !== i))}>
+              <button type="button" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md" aria-label={t('Remove {name}', { name: f.name })} onClick={() => onChange(files.filter((_, j) => j !== i))}>
                 <X className="h-4 w-4 text-slate-400 hover:text-slate-700" />
               </button>
             </li>

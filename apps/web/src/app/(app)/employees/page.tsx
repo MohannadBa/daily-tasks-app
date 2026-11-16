@@ -19,7 +19,7 @@ export default function EmployeesPage() {
       <PageHeader title={t('Employees')} subtitle={t('Performance ratings are private to managers and administrators.')} />
       <Card
         actions={
-          <Select className="w-56" value={projectId} onChange={(e) => setProjectId(e.target.value)} aria-label={t('All my projects')}>
+          <Select className="w-full sm:w-56" value={projectId} onChange={(e) => setProjectId(e.target.value)} aria-label={t('All my projects')}>
             <option value="">{t('All my projects')}</option>
             {manageable.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </Select>
@@ -32,7 +32,29 @@ export default function EmployeesPage() {
         ) : !perf.data?.length ? (
           <Empty title={t('No employees found')} />
         ) : (
-          <div className="-mx-5 overflow-x-auto">
+          <>
+          <ul className="-mx-4 divide-y divide-slate-100 sm:-mx-5 md:hidden">
+            {perf.data.map((p) => (
+              <li key={p.employee.id}>
+                <Link href={`/employees/${p.employee.id}${projectId ? `?projectId=${projectId}` : ''}`} className="block px-4 py-3 active:bg-slate-50">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="min-w-0 truncate font-medium text-slate-900">{p.employee.name}</span>
+                    <span className="flex shrink-0 items-center gap-1.5">
+                      <Stars value={p.averageRating} size={14} />
+                      {p.averageRating !== null && <span className="text-sm font-medium text-slate-700">{p.averageRating.toFixed(2)}</span>}
+                    </span>
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
+                    <span>{t('Rated')}: {p.ratedTaskCount}</span>
+                    <span>{t('Completed')}: {p.completedTaskCount}</span>
+                    <span>{t('Open')}: {p.openTaskCount}</span>
+                    <span className={p.overdueTaskCount ? 'font-medium text-red-600' : undefined}>{t('Overdue')}: {p.overdueTaskCount}</span>
+                  </div>
+                </Link>
+              </li>
+            ))}
+          </ul>
+          <div className="-mx-5 hidden overflow-x-auto md:block">
             <table className="min-w-full text-sm">
               <thead>
                 <tr className="border-b border-slate-100 text-start text-xs uppercase tracking-wide text-slate-500">
@@ -66,6 +88,7 @@ export default function EmployeesPage() {
               </tbody>
             </table>
           </div>
+          </>
         )}
       </Card>
     </>

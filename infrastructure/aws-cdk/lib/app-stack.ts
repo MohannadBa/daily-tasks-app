@@ -114,7 +114,7 @@ export class AppStack extends Stack {
       objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
       removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
       autoDeleteObjects: !isProd,
-      // Browsers upload/download directly with pre-signed URLs; mobile apps do not need CORS.
+      // Browsers (incl. the installed PWA) upload/download directly with pre-signed URLs.
       cors: [
         {
           allowedMethods: [s3.HttpMethods.PUT, s3.HttpMethods.GET, s3.HttpMethods.HEAD],
@@ -194,7 +194,7 @@ export class AppStack extends Stack {
     });
     const userPoolClient = userPool.addClient('AppClient', {
       userPoolClientName: `${prefix}-app`,
-      generateSecret: false, // public client used by the API on behalf of web and mobile
+      generateSecret: false, // public client used by the API on behalf of the web app
       authFlows: { userPassword: true, userSrp: true },
       preventUserExistenceErrors: true,
       accessTokenValidity: Duration.hours(1),
@@ -462,7 +462,7 @@ export class AppStack extends Stack {
 
     /* ------------------------------ Outputs ---------------------------- */
     new CfnOutput(this, 'AppUrl', { value: appUrl });
-    new CfnOutput(this, 'ApiUrl', { value: `${appUrl}/api/v1`, description: 'Set as EXPO_PUBLIC_API_URL for the mobile app' });
+    new CfnOutput(this, 'ApiUrl', { value: `${appUrl}/api/v1`, description: 'Public REST API base URL' });
     new CfnOutput(this, 'UserPoolId', { value: userPool.userPoolId });
     new CfnOutput(this, 'UserPoolClientId', { value: userPoolClient.userPoolClientId });
     new CfnOutput(this, 'ClusterName', { value: cluster.clusterName });

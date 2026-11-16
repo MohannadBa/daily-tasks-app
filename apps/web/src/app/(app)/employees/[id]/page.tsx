@@ -11,9 +11,9 @@ import { useT } from '@/lib/i18n';
 
 function Kpi({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+    <div className="min-w-0 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
       <p className="text-xs uppercase tracking-wide text-slate-500">{label}</p>
-      <div className="mt-2 text-2xl font-semibold text-slate-900">{children}</div>
+      <div className="mt-2 text-xl font-semibold text-slate-900 sm:text-2xl">{children}</div>
     </div>
   );
 }
@@ -29,7 +29,7 @@ function EmployeeDetail() {
   return (
     <>
       <PageHeader title={d.employee.name} subtitle={<>{d.employee.email} · {t('ratings are private and never shown to the employee')}</>} />
-      <div className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-5">
+      <div className="mb-4 grid grid-cols-2 gap-3 sm:mb-6 sm:gap-4 lg:grid-cols-5">
         <Kpi label={t('Average rating')}>
           <span className="flex items-center gap-2">
             {d.averageRating?.toFixed(2) ?? '—'}
@@ -41,7 +41,7 @@ function EmployeeDetail() {
         <Kpi label={t('Open')}>{d.openTaskCount}</Kpi>
         <Kpi label={t('Overdue')}>{d.overdueTaskCount}</Kpi>
       </div>
-      <div className="grid gap-6 lg:grid-cols-3">
+      <div className="grid gap-4 sm:gap-6 lg:grid-cols-3">
         <Card title={t('Task ratings')} className="lg:col-span-2">
           {d.ratings.length === 0 ? (
             <Empty title={t('No rated tasks yet')} />

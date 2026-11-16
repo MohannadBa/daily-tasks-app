@@ -1,5 +1,5 @@
 /**
- * Shared domain types used by the API, worker, web portal and mobile app.
+ * Shared domain types used by the API, worker and web app (PWA).
  * Enum values mirror the Prisma schema in packages/database/prisma/schema.prisma.
  */
 

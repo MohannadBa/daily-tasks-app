@@ -35,7 +35,7 @@ export class ApiError extends Error {
 }
 
 export interface ApiClientOptions {
-  /** e.g. http://localhost:3000/api/v1 (mobile) or /bff (web proxy). */
+  /** e.g. /bff (web BFF proxy, used by the PWA) or http://localhost:3000/api/v1 (direct, e.g. scripts/tests). */
   baseUrl: string;
   /** Returns the current access token, if the client manages bearer tokens itself. */
   getAccessToken?: () => Promise<string | null> | string | null;

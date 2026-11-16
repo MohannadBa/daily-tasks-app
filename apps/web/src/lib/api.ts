@@ -6,7 +6,7 @@ export const api = createApiClient({
   baseUrl: '/bff',
   onUnauthorized: async () => {
     if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-      window.location.href = `/login?next=${encodeURIComponent(window.location.pathname)}`;
+      window.location.href = `/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`;
     }
     return false;
   },

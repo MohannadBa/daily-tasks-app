@@ -1,5 +1,5 @@
 'use client';
-import { Paperclip, MessageSquare } from 'lucide-react';
+import { Calendar, ChevronRight, MessageSquare, Paperclip, UserRound } from 'lucide-react';
 import Link from 'next/link';
 import type { TaskDto } from '@dailytasks/shared-types';
 import { formatDateTime, formatRelative, taskStatusDisplay } from '@/lib/format';
@@ -18,7 +18,9 @@ export function TaskTable({ tasks, showProject = true, emptyText = 'No tasks fou
   if (tasks.length === 0) return <Empty title={tr(emptyText)} />;
   const showRating = tasks.some((t) => t.rating !== undefined);
   return (
-    <div className="-mx-5 overflow-x-auto">
+    <>
+      <TaskCards tasks={tasks} showProject={showProject} showRating={showRating} />
+      <div className="-mx-5 hidden overflow-x-auto md:block">
       <table className="min-w-full text-sm">
         <thead>
           <tr className="border-b border-slate-100 text-start text-xs uppercase tracking-wide text-slate-500">
@@ -76,6 +78,58 @@ export function TaskTable({ tasks, showProject = true, emptyText = 'No tasks fou
           ))}
         </tbody>
       </table>
-    </div>
+      </div>
+    </>
+  );
+}
+
+function RatingCell({ task }: { task: TaskDto }) {
+  const { t } = useT();
+  if (task.status !== 'COMPLETED') return null;
+  return task.rating ? <Stars value={task.rating.stars} size={14} /> : <Badge tone="amber">{t('Awaiting rating')}</Badge>;
+}
+
+/** Phone layout: one tappable card per task (no horizontal scrolling). */
+function TaskCards({ tasks, showProject, showRating }: { tasks: TaskDto[]; showProject: boolean; showRating: boolean }) {
+  return (
+    <ul className="-mx-4 divide-y divide-slate-100 sm:-mx-5 md:hidden">
+      {tasks.map((task) => (
+        <li key={task.id}>
+          <Link href={`/tasks/${task.id}`} className="flex items-start gap-3 px-4 py-3.5 active:bg-slate-50">
+            <div className="min-w-0 flex-1 space-y-1.5">
+              <div className="flex items-start justify-between gap-2">
+                <p className="min-w-0 break-words font-medium leading-snug text-slate-900">{task.title}</p>
+                <span className="shrink-0">
+                  <StatusBadge task={task} />
+                </span>
+              </div>
+              {showProject && <p className="truncate text-xs text-slate-500">{task.projectName}</p>}
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
+                <span className="inline-flex min-w-0 items-center gap-1">
+                  <UserRound className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                  <span className="truncate">{task.assignee.name}</span>
+                </span>
+                <span className={task.status !== 'COMPLETED' && task.isOverdue ? 'inline-flex items-center gap-1 font-medium text-red-600' : 'inline-flex items-center gap-1'}>
+                  <Calendar className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                  {task.status === 'COMPLETED' ? formatDateTime(task.deadline) : formatRelative(task.deadline)}
+                </span>
+                {task.commentCount > 0 && (
+                  <span className="inline-flex items-center gap-1">
+                    <MessageSquare className="h-3.5 w-3.5" aria-hidden /> {task.commentCount}
+                  </span>
+                )}
+                {task.attachmentCount > 0 && (
+                  <span className="inline-flex items-center gap-1">
+                    <Paperclip className="h-3.5 w-3.5" aria-hidden /> {task.attachmentCount}
+                  </span>
+                )}
+              </div>
+              {showRating && <RatingCell task={task} />}
+            </div>
+            <ChevronRight className="mt-0.5 h-5 w-5 shrink-0 text-slate-300 rtl:-scale-x-100" aria-hidden />
+          </Link>
+        </li>
+      ))}
+    </ul>
   );
 }

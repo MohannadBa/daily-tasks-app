@@ -4,13 +4,10 @@ dist/
 out/
 coverage/
 cdk.out/
-.expo/
 *.log
 .env
 .env.*
 !.env.example
 *.tsbuildinfo
 .DS_Store
-apps/mobile/ios/
-apps/mobile/android/
 cdk.context.json

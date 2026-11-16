@@ -12,12 +12,12 @@ import { useT } from '@/lib/i18n';
 
 function Stat({ label, value, icon, href, tone }: { label: string; value: number; icon: ReactNode; href: string; tone: string }) {
   return (
-    <Link href={href} className="group rounded-xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-brand-500/40 hover:shadow">
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-medium text-slate-500">{label}</span>
+    <Link href={href} className="group min-w-0 rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition hover:border-brand-500/40 hover:shadow active:bg-slate-50 sm:p-5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="min-w-0 truncate text-sm font-medium text-slate-500">{label}</span>
         <span className={`rounded-lg p-2 ${tone}`}>{icon}</span>
       </div>
-      <p className="mt-3 text-3xl font-semibold text-slate-900">{value}</p>
+      <p className="mt-2 text-2xl font-semibold text-slate-900 sm:mt-3 sm:text-3xl">{value}</p>
     </Link>
   );
 }
@@ -39,8 +39,8 @@ export default function DashboardPage() {
       {isLoading || !data ? (
         <Spinner />
       ) : (
-        <div className="space-y-6">
-          <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+        <div className="space-y-4 sm:space-y-6">
+          <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-5">
             <Stat label={t('Projects')} value={data.totals.projects} href="/projects" icon={<FolderKanban className="h-4 w-4" />} tone="bg-brand-50 text-brand-700" />
             <Stat label={t('Active tasks')} value={data.totals.activeTasks} href="/tasks?view=active" icon={<ClipboardList className="h-4 w-4" />} tone="bg-blue-50 text-blue-700" />
             <Stat label={t('Completed')} value={data.totals.completedTasks} href="/tasks?view=completed" icon={<CheckCircle2 className="h-4 w-4" />} tone="bg-emerald-50 text-emerald-700" />
@@ -50,12 +50,12 @@ export default function DashboardPage() {
             )}
           </div>
 
-          <div className="grid gap-6 lg:grid-cols-3">
-            <Card title={t('Upcoming deadlines')} className="lg:col-span-2" actions={<Link href="/tasks?view=active" className="text-sm text-brand-700">{t('View all')}</Link>}>
+          <div className="grid gap-4 sm:gap-6 lg:grid-cols-3">
+            <Card title={t('Upcoming deadlines')} className="lg:col-span-2" actions={<Link href="/tasks?view=active" className="-my-2 py-2 text-sm text-brand-700">{t('View all')}</Link>}>
               <TaskTable tasks={data.upcoming} emptyText="No open tasks" />
             </Card>
             {data.performance && (
-              <Card title={t('Employee performance')} actions={<Link href="/employees" className="text-sm text-brand-700">{t('Details')}</Link>}>
+              <Card title={t('Employee performance')} actions={<Link href="/employees" className="-my-2 py-2 text-sm text-brand-700">{t('Details')}</Link>}>
                 {data.performance.length === 0 ? (
                   <Empty title={t('No employees yet')} />
                 ) : (
@@ -64,8 +64,8 @@ export default function DashboardPage() {
                       .sort((a, b) => (b.averageRating ?? -1) - (a.averageRating ?? -1))
                       .slice(0, 8)
                       .map((p) => (
-                        <li key={p.employee.id} className="flex items-center justify-between py-2.5">
-                          <Link href={`/employees/${p.employee.id}`} className="text-sm font-medium text-slate-800 hover:text-brand-700">
+                        <li key={p.employee.id} className="flex items-center justify-between gap-2 py-2.5">
+                          <Link href={`/employees/${p.employee.id}`} className="min-w-0 truncate py-2 text-sm font-medium text-slate-800 hover:text-brand-700">
                             {p.employee.name}
                           </Link>
                           <span className="flex items-center gap-2">

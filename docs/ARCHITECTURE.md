@@ -3,11 +3,11 @@
 ## Components
 
 ```
-            ┌────────────── Browser ──────────────┐      ┌──── Phone (Expo) ────┐
-            │ Next.js portal  (/bff proxy, cookies)│      │ bearer tokens        │
-            └───────────────┬──────────────────────┘      └─────────┬────────────┘
-                            │ HTTPS (ALB)                           │
-                    ┌───────▼──────────────────────────────────────▼───────┐
+        ┌──── Desktop browser · phone browser · installed PWA (Home Screen) ────┐
+        │ Next.js web app (/bff proxy, httpOnly cookies, service worker)        │
+        └───────────────────────────────┬───────────────────────────────────────┘
+                                        │ HTTPS (ALB)
+                    ┌───────────────────▼──────────────────────────────────┐
                     │                 NestJS API  (/api/v1)                 │
                     │ AuthGuard → AccessService → services → Prisma ($tx)   │
                     │          writes business rows + OutboxEvent           │
@@ -20,7 +20,7 @@
                     ┌───────┴──────────────────────────────────────────────┐
                     │ Worker: outbox relay ─► SQS ─► consumer ─► notifier   │
                     │         schedule sync ─► EventBridge Scheduler ─► SQS │
-                    │         Expo push (APNs/FCM) + receipt checks         │
+                    │  push sender (Expo today; Web Push migration pending) │
                     └──────────────────────────────────────────────────────┘
 ```
 
@@ -56,7 +56,7 @@
 3. Consumer handles each message idempotently, then deletes it. Failures are retried by SQS visibility timeout; after 5 receives → DLQ (alarmed).
 4. `Notifier` de-duplicates recipients (multi-role users get one notification), excludes the actor, creates `Notification` rows with `skipDuplicates` on `(userId, dedupeKey)`, then pushes rows whose `pushedAt` is null to every active device — so retries never duplicate rows and only re-push what failed.
 5. Expo Push (→ APNs/FCM). `DeviceNotRegistered` at ticket or receipt time disables the device. Receipts are checked ~15 min later (`PushTicket`).
-6. Push payload `data.url = dailytasks://tasks/<id>` for deep links. In-app notification list works even if push fails. OS delivery timing is not guaranteed.
+6. Push payload `data.url = dailytasks://tasks/<id>` (becomes `/tasks/<id>` with Web Push; the web app already deep-links every screen, see docs/PWA.md). In-app notification list works even if push fails. OS delivery timing is not guaranteed.
 
 | Event | Recipients |
 |---|---|
