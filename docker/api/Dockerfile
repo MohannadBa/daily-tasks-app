@@ -43,6 +43,8 @@ COPY --from=build --chown=node:node /app/packages/database/dist packages/databas
 COPY --from=build --chown=node:node /app/packages/shared-types/dist packages/shared-types/dist
 COPY --from=build --chown=node:node /app/packages/validation/dist packages/validation/dist
 COPY --from=build --chown=node:node /app/apps/api/dist apps/api/dist
+# Public Amazon RDS CA bundle: lets DB_SSL_CA_FILE verify the database certificate.
+COPY --chown=node:node docker/certs/rds-global-bundle.pem /app/certs/rds-global-bundle.pem
 COPY --chown=node:node docker/api/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 USER node

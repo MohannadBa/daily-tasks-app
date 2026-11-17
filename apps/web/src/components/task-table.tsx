@@ -59,7 +59,7 @@ export function TaskTable({ tasks, showProject = true, emptyText = 'No tasks fou
               {showProject && <td className="px-3 py-3 text-slate-600">{t.projectName}</td>}
               <td className="px-3 py-3 text-slate-600">{t.assignee.name}</td>
               <td className="px-3 py-3 text-slate-600">
-                <div>{formatDateTime(t.deadline)}</div>
+                <div className="whitespace-nowrap">{formatDateTime(t.deadline)}</div>
                 {t.status !== 'COMPLETED' && <div className={t.isOverdue ? 'text-xs text-red-600' : 'text-xs text-slate-400'}>{formatRelative(t.deadline)}</div>}
               </td>
               <td className="px-3 py-3">

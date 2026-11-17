@@ -6,7 +6,7 @@ import { Notifier } from '../src/notifier';
 import { EventProcessor } from '../src/processor';
 import { RecordingPushTransport } from '../src/push';
 import { MemoryQueue } from '../src/queue';
-import { ChromiumPdfRenderer, cleanupExpiredReports, formatDuration, processReport, renderReportHtml, type PdfRenderer } from '../src/reports';
+import { ChromiumPdfRenderer, cleanupExpiredReports, footerHtml, formatDate, formatDuration, historyLabel, processReport, renderReportHtml, type PdfRenderer } from '../src/reports';
 import { deadlineMessage, LocalDbScheduler } from '../src/scheduler';
 import { taskFields } from './fixtures';
 
@@ -215,6 +215,26 @@ describe('PDF reports', () => {
     expect(withRating).toContain('★★★★☆');
   });
 
+  it('visual QA fixes: localized history, unbreakable bidi-isolated dates, RTL footer, page-break rules', () => {
+    expect(historyLabel('EXTENSION_REQUESTED', 'ar')).toBe('طلب تمديد');
+    expect(historyLabel('SUBMITTED', 'en')).toBe('Submitted for review');
+    const html = renderReportHtml(dataset({ tasks: [{ ...dataset().tasks[0]!, history: [{ at: new Date().toISOString(), action: 'REJECTED', actor: 'مدير' }] }] }));
+    expect(html).toContain('رفض التسليم');
+    expect(html).not.toMatch(/>REJECTED</);
+    const ar = formatDate('2026-11-17T10:19:00Z', 'ar');
+    expect(ar.startsWith('⁧') && ar.endsWith('⁩')).toBe(true);
+    expect(ar).not.toContain(' ');
+    expect(formatDate('2026-11-17T10:19:00Z', 'en')).not.toMatch(/[ ⁧⁩]/);
+    const f = footerHtml({ company: 'الراسيات', ref: 'f5a24c65', locale: 'ar' });
+    expect(f).toContain('dir="rtl"');
+    expect(f).toContain('<span dir="ltr">f5a24c65</span>');
+    expect(f).toContain('صفحة <span class="pageNumber"></span> من <span class="totalPages"></span>');
+    expect(footerHtml({ company: 'Al-Rasiyat', ref: 'x', locale: 'en' })).toContain('Page <span class="pageNumber"></span> of');
+    expect(html).toContain('break-after:avoid');
+    expect(renderReportHtml(dataset({ type: 'EMPLOYEE' }))).toContain('class="task compact"');
+    expect(html).toContain('class="task"');
+  });
+
   it('formats durations in both languages', () => {
     expect(formatDuration(28 * H, 'en')).toBe('1d 4h');
     expect(formatDuration(22 * H, 'ar')).toBe('22 ساعة');
@@ -263,7 +283,7 @@ describe('PDF reports', () => {
 
   const chrome = [process.env.CHROMIUM_PATH, 'C:/Program Files/Google/Chrome/Application/chrome.exe', '/usr/bin/chromium', '/usr/bin/google-chrome'].find((p) => p && existsSync(p));
   it.skipIf(!chrome)('real Chromium renders a valid Arabic PDF', async () => {
-    const pdf = await new ChromiumPdfRenderer(chrome, 60_000).render(renderReportHtml(dataset()), 'الراسيات');
+    const pdf = await new ChromiumPdfRenderer(chrome, 60_000).render(renderReportHtml(dataset()), { company: 'الراسيات', ref: 'abc12345', locale: 'ar' });
     expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
     expect(pdf.length).toBeGreaterThan(5_000);
   }, 90_000);

@@ -51,7 +51,15 @@ describe('approval workflow display', () => {
     expect(formatDuration(90 * 60_000)).toBe('1h 30m');
     expect(formatDuration(0)).toBe('0m');
     setFormatLocale('ar');
-    expect(formatDuration(22 * 3600_000)).toBe('22 س');
+    expect(formatDuration(22 * 3600_000)).toBe('⁧22 س⁩');
     setFormatLocale('en');
+  });
+  it('Arabic dates are bidi-isolated (no reordering next to Latin names); English is untouched', () => {
+    setFormatLocale('ar');
+    const ar = formatDateTime('2030-05-01T11:30:00Z');
+    expect(ar.startsWith('⁧')).toBe(true);
+    expect(ar.endsWith('⁩')).toBe(true);
+    setFormatLocale('en');
+    expect(formatDateTime('2030-05-01T11:30:00Z')).not.toMatch(/[⁦-⁩]/);
   });
 });

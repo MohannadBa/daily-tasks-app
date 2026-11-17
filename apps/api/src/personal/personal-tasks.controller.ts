@@ -1,8 +1,7 @@
 import { Controller, Delete, Get, HttpCode, Inject, Injectable, Module, Param, ParseUUIDPipe, Patch, Post } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import type { ApiEnv } from '@dailytasks/config';
-import type { PersonalTask, Prisma } from '@dailytasks/database';
+import { PersonalCipher, type PersonalTask, type Prisma } from '@dailytasks/database';
 import type { Paginated, PersonalTaskDto } from '@dailytasks/shared-types';
 import { personalTaskCreateSchema, personalTaskListQuerySchema, personalTaskUpdateSchema, type z } from '@dailytasks/validation';
 import type { AuthUser } from '../auth/auth.types';
@@ -13,32 +12,23 @@ import { API_ENV } from '../config/config.module';
 import { PrismaService } from '../prisma/prisma.service';
 
 /**
- * AES-256-GCM field encryption for personal task content (D-12). Format: v1.<iv>.<tag>.<ciphertext>
- * (base64url). The key is derived from PERSONAL_DATA_KEY (Secrets Manager in AWS); database
- * readers — including admins with SQL access — see only ciphertext.
+ * AES-256-GCM field encryption for personal task content (D-12), bound to the owner. The key comes
+ * from PERSONAL_DATA_KEY (Secrets Manager in AWS); PERSONAL_DATA_KEY_PREVIOUS is set only during a
+ * rotation. Rows still on the previous key are re-encrypted when read (and by rekey-personal).
  */
 @Injectable()
 export class PersonalCrypto {
-  private readonly key: Buffer;
+  private readonly cipher: PersonalCipher;
   constructor(@Inject(API_ENV) env: ApiEnv) {
-    this.key = createHash('sha256').update(env.PERSONAL_DATA_KEY).digest();
+    this.cipher = new PersonalCipher([env.PERSONAL_DATA_KEY, env.PERSONAL_DATA_KEY_PREVIOUS]);
   }
 
   encrypt(plain: string, ownerId: string): string {
-    const iv = randomBytes(12);
-    const c = createCipheriv('aes-256-gcm', this.key, iv);
-    c.setAAD(Buffer.from(ownerId)); // ciphertext is bound to its owner (no row swapping)
-    const enc = Buffer.concat([c.update(plain, 'utf8'), c.final()]);
-    return ['v1', iv.toString('base64url'), c.getAuthTag().toString('base64url'), enc.toString('base64url')].join('.');
+    return this.cipher.encrypt(plain, ownerId);
   }
 
-  decrypt(value: string, ownerId: string): string {
-    const [v, iv, tag, data] = value.split('.');
-    if (v !== 'v1' || !iv || !tag || data === undefined) throw new Error('Unsupported ciphertext');
-    const d = createDecipheriv('aes-256-gcm', this.key, Buffer.from(iv, 'base64url'));
-    d.setAAD(Buffer.from(ownerId));
-    d.setAuthTag(Buffer.from(tag, 'base64url'));
-    return Buffer.concat([d.update(Buffer.from(data, 'base64url')), d.final()]).toString('utf8');
+  decrypt(value: string, ownerId: string): { plain: string; stale: boolean } {
+    return this.cipher.decrypt(value, ownerId);
   }
 }
 
@@ -57,10 +47,13 @@ export class PersonalTasksController {
   ) {}
 
   private toDto(t: PersonalTask): PersonalTaskDto {
+    const title = this.crypto.decrypt(t.titleEnc, t.ownerId);
+    const notes = t.notesEnc ? this.crypto.decrypt(t.notesEnc, t.ownerId) : null;
+    if (title.stale || notes?.stale) this.rekeyLater(t, title.plain, notes?.plain ?? null);
     return {
       id: t.id,
-      title: this.crypto.decrypt(t.titleEnc, t.ownerId),
-      notes: t.notesEnc ? this.crypto.decrypt(t.notesEnc, t.ownerId) : null,
+      title: title.plain,
+      notes: notes?.plain ?? null,
       dueAt: t.dueAt?.toISOString() ?? null,
       priority: t.priority,
       status: t.status,
@@ -68,6 +61,16 @@ export class PersonalTasksController {
       createdAt: t.createdAt.toISOString(),
       updatedAt: t.updatedAt.toISOString(),
     };
+  }
+
+  /** Lazy rotation: a row read with the previous key is re-encrypted with the current one. */
+  private rekeyLater(t: PersonalTask, title: string, notes: string | null) {
+    void this.prisma.personalTask
+      .updateMany({
+        where: { id: t.id, titleEnc: t.titleEnc },
+        data: { titleEnc: this.crypto.encrypt(title, t.ownerId), notesEnc: notes === null ? null : this.crypto.encrypt(notes, t.ownerId) },
+      })
+      .catch(() => undefined);
   }
 
   private async own(user: AuthUser, id: string) {

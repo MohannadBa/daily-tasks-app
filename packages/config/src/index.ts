@@ -138,6 +138,8 @@ export const apiEnvSchema = z
      * Secrets Manager in AWS. Losing it makes existing personal tasks unreadable.
      */
     PERSONAL_DATA_KEY: z.string().default(''),
+    /** Previous key, set only during a key rotation (decrypt fallback; see docs/OPERATIONS.md). */
+    PERSONAL_DATA_KEY_PREVIOUS: z.string().default(''),
   })
   .superRefine((env, ctx) => {
     if (env.AUTH_MODE === 'local') {
@@ -153,7 +155,11 @@ export const apiEnvSchema = z
       if (env.PERSONAL_DATA_KEY.length < 32 || env.PERSONAL_DATA_KEY === DEV_PERSONAL_DATA_KEY) {
         ctx.addIssue({ code: 'custom', path: ['PERSONAL_DATA_KEY'], message: 'PERSONAL_DATA_KEY (>=32 chars, not the development value) is required in production' });
       }
-    } else if (env.PERSONAL_DATA_KEY.length < 32) {
+    }
+    if (env.PERSONAL_DATA_KEY_PREVIOUS && (env.PERSONAL_DATA_KEY_PREVIOUS.length < 32 || env.PERSONAL_DATA_KEY_PREVIOUS === env.PERSONAL_DATA_KEY)) {
+      ctx.addIssue({ code: 'custom', path: ['PERSONAL_DATA_KEY_PREVIOUS'], message: 'PERSONAL_DATA_KEY_PREVIOUS must be >= 32 characters and differ from PERSONAL_DATA_KEY' });
+    }
+    if (env.NODE_ENV !== 'production' && env.PERSONAL_DATA_KEY.length < 32) {
       ctx.addIssue({ code: 'custom', path: ['PERSONAL_DATA_KEY'], message: 'PERSONAL_DATA_KEY (>=32 chars) is required' });
     }
     if (env.AUTH_MODE === 'cognito' && (!env.COGNITO_USER_POOL_ID || !env.COGNITO_CLIENT_ID)) {
@@ -218,7 +224,10 @@ export function ensureDatabaseUrl(env: Record<string, string | undefined> = proc
   const user = encodeURIComponent(env.DB_USERNAME ?? '');
   const pass = encodeURIComponent(env.DB_PASSWORD ?? '');
   const ssl = env.DB_SSLMODE ?? 'require';
-  env.DATABASE_URL = `postgresql://${user}:${pass}@${env.DB_HOST}:${env.DB_PORT ?? '5432'}/${env.DB_NAME ?? 'dailytasks'}?schema=public&sslmode=${ssl}&connection_limit=${env.DB_CONNECTION_LIMIT ?? '10'}`;
+  // With DB_SSL_CA_FILE (the RDS CA bundle shipped in the images) the server certificate and host
+  // name are verified (Prisma sslaccept=strict). Without it, TLS is used but not verified.
+  const verify = env.DB_SSL_CA_FILE ? `&sslcert=${encodeURIComponent(env.DB_SSL_CA_FILE)}&sslaccept=strict` : '';
+  env.DATABASE_URL = `postgresql://${user}:${pass}@${env.DB_HOST}:${env.DB_PORT ?? '5432'}/${env.DB_NAME ?? 'dailytasks'}?schema=public&sslmode=${ssl}${verify}&connection_limit=${env.DB_CONNECTION_LIMIT ?? '10'}`;
 }
 
 /** Parse env and fail fast with a readable error that never prints secret values. */

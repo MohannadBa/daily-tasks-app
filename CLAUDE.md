@@ -30,6 +30,7 @@ docker compose up -d --build # postgres(5433) localstack(4566) migrate api(3000)
 pnpm test                    # needs compose postgres running (tests use dailytasks_test DB)
 pnpm lint && pnpm typecheck
 pnpm test:docker             # end-to-end smoke test against the running compose stack (~75s)
+node scripts/cognito-staging-test.mjs   # Cognito verification against a deployed staging API (env vars in docs/COGNITO_TESTS.md)
 pnpm cdk:synth               # synth registry+staging; production needs HTTPS context (synth:production). NEVER deploy without explicit human approval
 ```
 Demo logins (seed, local only): `manager1@dailytasks.local` / `employee1@dailytasks.local` / `admin@dailytasks.local`, password `Password123!`.

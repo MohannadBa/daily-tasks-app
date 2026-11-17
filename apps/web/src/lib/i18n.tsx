@@ -730,6 +730,7 @@ const ar: Record<string, string> = {
   "{n} overdue": "{n} متأخرة",
   "{n} pending": "{n} معلّقة",
   '{i} of {n}': '{i} من {n}',
+  'The file could not be loaded. Try downloading it instead.': 'تعذّر تحميل الملف. جرّب تنزيله بدلاً من ذلك.',
 };
 
 const dictionaries: Record<Locale, Record<string, string>> = { en: {}, ar };

@@ -1,3 +1,4 @@
+import { PersonalCipher } from '@dailytasks/database';
 import { api, createTestApp, inHours, joinDepartment, seedWorld, submitAndApprove, type TestContext } from './helpers';
 
 const H = 3600_000;
@@ -68,6 +69,11 @@ describe('Enterprise platform (API)', () => {
       expect((await api(ctx, w.admin.id).post('/departments', { code: 'LEGAL', nameAr: 'أخرى', nameEn: 'Other' })).status).toBe(409);
       await api(ctx, w.admin.id).patch(`/departments/${created.body.id}`, { isActive: false }).expect(200);
       expect((await api(ctx, w.emp1.id).get('/departments')).body.map((d: { id: string }) => d.id)).not.toContain(created.body.id);
+      // Admin view with inactive departments: active ones first, inactive ones last.
+      const all = (await api(ctx, w.admin.id).get('/departments?includeInactive=true').expect(200)).body as Array<{ isActive: boolean }>;
+      const firstInactive = all.findIndex((d) => !d.isActive);
+      expect(firstInactive).toBeGreaterThan(0);
+      expect(all.slice(firstInactive).every((d) => !d.isActive)).toBe(true);
       const audit = await ctx.prisma.auditLog.findMany({ where: { entityId: created.body.id } });
       expect(audit.map((a) => a.action).sort()).toEqual(['DEPARTMENT_CREATED', 'DEPARTMENT_DEACTIVATED']);
     });
@@ -461,6 +467,22 @@ describe('Enterprise platform (API)', () => {
   /* ============================== personal tasks ============================== */
 
   describe('personal tasks', () => {
+    it('key rotation: rows encrypted with the previous key are readable and re-encrypted with the current key on read', async () => {
+      const oldCipher = new PersonalCipher([process.env.PERSONAL_DATA_KEY_PREVIOUS!]);
+      const row = await ctx.prisma.personalTask.create({ data: { ownerId: w.emp1.id, titleEnc: oldCipher.encrypt('Legacy note', w.emp1.id), notesEnc: oldCipher.encrypt('old notes', w.emp1.id) } });
+      const got = await api(ctx, w.emp1.id).get(`/me/personal-tasks/${row.id}`).expect(200);
+      expect(got.body).toMatchObject({ title: 'Legacy note', notes: 'old notes' });
+      const current = new PersonalCipher([process.env.PERSONAL_DATA_KEY!]);
+      let after = await ctx.prisma.personalTask.findUniqueOrThrow({ where: { id: row.id } });
+      for (let i = 0; i < 20 && after.titleEnc === row.titleEnc; i++) {
+        await new Promise((r) => setTimeout(r, 50)); // lazy write is fire-and-forget
+        after = await ctx.prisma.personalTask.findUniqueOrThrow({ where: { id: row.id } });
+      }
+      expect(current.decrypt(after.titleEnc, w.emp1.id)).toEqual({ plain: 'Legacy note', stale: false });
+      expect(current.decrypt(after.notesEnc!, w.emp1.id).plain).toBe('old notes');
+      await ctx.prisma.personalTask.delete({ where: { id: row.id } });
+    });
+
     it('owner-only (admins included), encrypted at rest, excluded from tasks/dashboards/reports', async () => {
       const mine = await api(ctx, w.emp1.id).post('/me/personal-tasks', { title: 'Call the dentist', notes: 'Private note', priority: 'HIGH' }).expect(201);
       expect(mine.body).toMatchObject({ title: 'Call the dentist', notes: 'Private note', status: 'OPEN' });

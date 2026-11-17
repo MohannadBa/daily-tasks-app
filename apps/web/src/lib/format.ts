@@ -12,23 +12,30 @@ export function setFormatLocale(locale: 'en' | 'ar') {
   intlLocale = locale === 'ar' ? 'ar-u-ca-gregory' : 'en';
 }
 
+/**
+ * Arabic: wrap a formatted value in a right-to-left isolate (RLI … PDI) so the bidi algorithm keeps
+ * it as one unit. Without it, a date next to a Latin name ("Omar Employee · 17/11/2026، 1:19 ص")
+ * gets its digits reordered across the name. English output is unchanged.
+ */
+const isolate = (s: string) => (intlLocale?.startsWith('ar') ? `⁧${s}⁩` : s);
+
 export function formatDateTime(iso: string | null | undefined): string {
   if (!iso) return '—';
-  return new Intl.DateTimeFormat(intlLocale, { dateStyle: 'medium', timeStyle: 'short', timeZone: APP_TIMEZONE }).format(new Date(iso));
+  return isolate(new Intl.DateTimeFormat(intlLocale, { dateStyle: 'medium', timeStyle: 'short', timeZone: APP_TIMEZONE }).format(new Date(iso)));
 }
 
 export function formatDate(iso: string | null | undefined): string {
   if (!iso) return '—';
-  return new Intl.DateTimeFormat(intlLocale, { dateStyle: 'medium', timeZone: APP_TIMEZONE }).format(new Date(iso));
+  return isolate(new Intl.DateTimeFormat(intlLocale, { dateStyle: 'medium', timeZone: APP_TIMEZONE }).format(new Date(iso)));
 }
 
 export function formatRelative(iso: string, now = Date.now()): string {
   const diff = new Date(iso).getTime() - now;
   const abs = Math.abs(diff);
   const rtf = new Intl.RelativeTimeFormat(intlLocale, { numeric: 'auto' });
-  if (abs < 3600_000) return rtf.format(Math.round(diff / 60_000), 'minute');
-  if (abs < 86400_000) return rtf.format(Math.round(diff / 3600_000), 'hour');
-  return rtf.format(Math.round(diff / 86400_000), 'day');
+  if (abs < 3600_000) return isolate(rtf.format(Math.round(diff / 60_000), 'minute'));
+  if (abs < 86400_000) return isolate(rtf.format(Math.round(diff / 3600_000), 'hour'));
+  return isolate(rtf.format(Math.round(diff / 86400_000), 'day'));
 }
 
 /** Duration such as "1d 4h" / "1 يوم 4 س" (accountable time, budgets, extensions). */
@@ -40,7 +47,7 @@ export function formatDuration(ms: number): string {
   const ar = intlLocale?.startsWith('ar');
   const u = ar ? { d: ' يوم', h: ' س', m: ' د' } : { d: 'd', h: 'h', m: 'm' };
   const parts = [d && `${d}${u.d}`, h && `${h}${u.h}`, (m || (!d && !h)) && `${m}${u.m}`].filter(Boolean);
-  return parts.join(' ');
+  return isolate(parts.join(' '));
 }
 
 export function formatBytes(n: number): string {

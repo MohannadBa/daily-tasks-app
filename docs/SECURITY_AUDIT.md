@@ -2,6 +2,54 @@
 
 Date: 2026-11-16. Scope: API, worker, web/PWA, service worker, Web Push, Docker, AWS CDK. Method: code review plus automated tests (see "Evidence"). This is an internal engineering review, not a third-party penetration test.
 
+## Final staging-readiness security review (2026-11-17)
+
+Method: code review of every area below, the synthesized staging template (`cdk synth --no-lookups`, no AWS calls), and the automated suites. Real Cognito, real AWS IAM evaluation and physical devices are **not** covered and are listed as open items.
+
+### Findings fixed in this review
+| # | Finding | Severity | Fix | Evidence |
+|---|---|---|---|---|
+| S1 | Admin password reset (Cognito) did not revoke existing sessions — a stolen refresh token (30 days) kept working after the user chose a new password | High | Every admin reset calls `AdminUserGlobalSignOut`; old access tokens are gated by `mustChangePassword` until expiry | `identity.cognito.spec.ts`; staging script C7 |
+| S2 | Completing an e-mailed reset code left `mustChangePassword` set → user forced to change the password twice | Medium (availability/UX) | `confirmPasswordReset` clears the flag + audits `via: reset-code` | `identity.cognito.spec.ts`; staging step M5 |
+| S3 | Database TLS was `sslmode=require` without certificate verification (MITM possible inside the network path) | Medium | Public RDS CA bundle baked into api/worker images; `DB_SSL_CA_FILE` → Prisma `sslcert` + `sslaccept=strict`; set by CDK for api, worker and migrate | `db-url.spec.ts`, CDK test; **first proof = staging migrate** |
+| S4 | No way to rotate the personal-data encryption key without losing personal tasks | Medium | Key ring (current + previous), lazy re-encryption on read, `rekey-personal` one-off task, CDK `personalDataKeyPreviousSecretArn`, runbook | `personal-cipher.test.ts`, API rotation e2e test, OPERATIONS.md §8 |
+| S5 | API task role could delete any S3 object (not needed) | Low | API role: read + put only; deletes remain worker-only | CDK least-privilege test |
+| S6 | First admin of an environment required hand-written SQL in production | Low (operational risk) | `bootstrap-admin` one-off task (idempotent, refuses if an admin exists, no password stored) | `bootstrap-admin.test.ts` |
+
+### Area-by-area results
+| Area | Result | Notes |
+|---|---|---|
+| Authentication & Cognito integration | ✅ code / ⏳ real Cognito | USER_PASSWORD_AUTH on a public client; JWKS verification (token_use=access, client_id); generic errors; `preventUserExistenceErrors`; S1/S2 fixed. Real pool behaviour unverified — COGNITO_TESTS.md |
+| Temporary password provisioning | ✅ | CSPRNG 16 chars; EMAIL (Cognito never exposes it to us) or SHOW_ONCE (returned once; never in DB/logs/audit/browser storage — browser test) |
+| Forced first-login change | ✅ | Login challenge + API gate `PASSWORD_CHANGE_REQUIRED` + blocking web screen |
+| Global sign-out | ✅ code / ⏳ Cognito | On deactivation and (new) on admin reset; DB `isActive` re-checked every request |
+| Role & project authorization | ✅ | Centralised in AccessService; IDOR-safe 404; creator/approver task scope (managers don't see each other's tasks; admin has no company-wide task access); 91+ API tests |
+| Department restrictions | ✅ | Assignee/transfer target must be in project ∩ department; inactive departments refused |
+| Personal task encryption | ✅ | AES-256-GCM, owner id as AAD, owner-only for every role; key only in the api container |
+| Encryption-key backup & recovery | ⚠️ process | Secret RETAINed; **escrow procedure must be executed by a human after the first deploy** (OPERATIONS.md §8) |
+| Encryption-key rotation | ✅ | S4 |
+| Approval & transfer authorization | ✅ | Approver/admin-with-reason only; no self-approval along the chain; conditional claims (409 on races); chain depth ≤ 3, no cycles |
+| Rating privacy | ✅ | Only the task's managers; never the assignee (incl. admins who are assignees); excluded from employee DTOs, dashboards, reports |
+| Document permissions | ✅ | Project membership + visibility; task deliverables "managers only" limited to the task's managers; pre-signed URLs only after checks |
+| S3 access | ✅ | Private bucket, Block Public Access, TLS-only policy, SSE, CORS pinned to the domain; random object keys; type+size signed uploads; HeadObject confirm; inline disposition only for images/PDF |
+| PDF report access | ✅ | Private to the requester; dataset authorized at request time and deleted after rendering; 20/hour quota; 7-day retention + S3 lifecycle |
+| WebSocket authentication | ✅ | httpOnly cookie or bearer; Origin check; inactive users refused; 4401 on expiry; ids-only payloads |
+| Web Push subscription ownership | ✅ | All subscription queries scoped to the caller; endpoint allow-list (SSRF); keys never returned or logged |
+| VAPID private key | ✅ | Secrets Manager → worker only; dev key refused in production |
+| Secrets Manager permissions | ✅ | Each execution role can read only its own container's secrets; web has none |
+| Database TLS | ✅ after S3 / ⏳ staging | Verified-TLS path must be proven on the first staging migrate |
+| Trusted proxy configuration | ✅ | ALB appends the client IP; the BFF forwards only the last X-Forwarded-For entry; the API trusts exactly one hop |
+| Rate limiting | ✅ / ⚠️ | Login/new-password/forgot/reset/refresh/push-test throttled per IP; **in-memory per API task** (effective limit × task count in production) — recommend an AWS WAF rate-based rule for `/api/v1/auth/*` |
+| Logging & redaction | ✅ | Only error names/ids/hosts logged; env validation lists keys only; no tokens, passwords, keys, subscription secrets or personal content |
+
+### Open items (cannot be closed without staging / people)
+1. Real Cognito behaviour (COGNITO_TESTS.md C0–C9, M1–M8).
+2. Verified DB TLS on RDS (first staging migrate).
+3. Personal-data key escrow by two custodians.
+4. Production e-mail via SES (Cognito default sender limits).
+5. Physical-device push tests (REAL_DEVICE_TESTS.md).
+6. Recommended: WAF rate-based rule, ALB access logs, CloudTrail, RDS credential rotation, a restore drill.
+
 ## Findings fixed in this audit
 
 | # | Finding | Severity | Fix | Evidence |

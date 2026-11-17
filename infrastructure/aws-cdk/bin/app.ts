@@ -36,6 +36,7 @@ for (const config of Object.values(environments)) {
     alarmEmail: ctx('alarmEmail'),
     vapidPublicKey: ctx(`${config.name}:vapidPublicKey`),
     vapidPrivateKeySecretArn: ctx(`${config.name}:vapidPrivateKeySecretArn`),
+    personalDataKeyPreviousSecretArn: ctx(`${config.name}:personalDataKeyPreviousSecretArn`),
     vapidSubject: ctx(`${config.name}:vapidSubject`),
     terminationProtection: config.name === 'production',
   });

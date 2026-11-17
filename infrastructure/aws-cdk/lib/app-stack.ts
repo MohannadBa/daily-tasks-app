@@ -49,6 +49,11 @@ export interface AppStackProps extends StackProps {
   vapidPublicKey?: string;
   /** ARN of a Secrets Manager secret whose SecretString is the VAPID private key. */
   vapidPrivateKeySecretArn?: string;
+  /**
+   * Only during a personal-data key rotation: ARN of a secret holding the PREVIOUS key (decrypt
+   * fallback). Remove it after rekey-personal has re-encrypted every row. See docs/OPERATIONS.md.
+   */
+  personalDataKeyPreviousSecretArn?: string;
   /** VAPID contact ("sub" claim) push services can use to reach the operator: mailto:… or https://… */
   vapidSubject?: string;
 }
@@ -288,6 +293,8 @@ export class AppStack extends Stack {
     const vapidPublic: Record<string, string> = pushConfigured ? { WEB_PUSH_VAPID_PUBLIC_KEY: props.vapidPublicKey! } : {};
     const sharedEnv = {
       NODE_ENV: 'production',
+      // Verify the RDS server certificate (CA bundle baked into the api/worker images).
+      DB_SSL_CA_FILE: '/app/certs/rds-global-bundle.pem',
       LOG_LEVEL: 'info',
       AWS_REGION: this.region,
       S3_BUCKET: bucket.bucketName,
@@ -328,7 +335,13 @@ export class AppStack extends Stack {
         RUN_MIGRATIONS: 'false', // migrations run as a one-off task (see docs/DEPLOYMENT.md)
         ...vapidPublic,
       },
-      secrets: { ...dbSecrets, PERSONAL_DATA_KEY: ecs.Secret.fromSecretsManager(personalDataKey) },
+      secrets: {
+        ...dbSecrets,
+        PERSONAL_DATA_KEY: ecs.Secret.fromSecretsManager(personalDataKey),
+        ...(props.personalDataKeyPreviousSecretArn
+          ? { PERSONAL_DATA_KEY_PREVIOUS: ecs.Secret.fromSecretsManager(secretsmanager.Secret.fromSecretCompleteArn(this, 'PersonalDataKeyPrevious', props.personalDataKeyPreviousSecretArn)) }
+          : {}),
+      },
       healthCheck: {
         command: ['CMD-SHELL', "node -e \"fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""],
         interval: Duration.seconds(15),
@@ -336,7 +349,10 @@ export class AppStack extends Stack {
       },
       stopTimeout: Duration.seconds(30),
     });
-    bucket.grantReadWrite(apiTd.taskRole);
+    // Least privilege: the API signs uploads (PutObject) and downloads / HEAD checks (GetObject).
+    // It never deletes objects — retention clean-up is the worker's job.
+    bucket.grantRead(apiTd.taskRole);
+    bucket.grantPut(apiTd.taskRole);
     apiTd.taskRole.addToPrincipalPolicy(
       new iam.PolicyStatement({
         // Admin provisioning: create, enable/disable, reset, set temporary password, revoke sessions.
@@ -370,7 +386,7 @@ export class AppStack extends Stack {
       image: image('api'),
       command: ['migrate'],
       logging: ecs.LogDrivers.awsLogs({ streamPrefix: 'migrate', logGroup: logGroup('migrate') }),
-      environment: { NODE_ENV: 'production', SEED_DEMO_DATA: 'false' },
+      environment: { NODE_ENV: 'production', SEED_DEMO_DATA: 'false', DB_SSL_CA_FILE: '/app/certs/rds-global-bundle.pem' },
       secrets: dbSecrets,
     });
 
@@ -559,6 +575,8 @@ export class AppStack extends Stack {
     new CfnOutput(this, 'UserPoolClientId', { value: userPoolClient.userPoolClientId });
     new CfnOutput(this, 'ClusterName', { value: cluster.clusterName });
     new CfnOutput(this, 'MigrateTaskDefinition', { value: migrateTd.taskDefinitionArn });
+    // For one-off tasks that need the API's secrets (e.g. rekey-personal during a key rotation).
+    new CfnOutput(this, 'ApiTaskDefinition', { value: apiTd.taskDefinitionArn });
     new CfnOutput(this, 'MigrateSubnets', { value: vpc.privateSubnets.map((s) => s.subnetId).join(',') });
     new CfnOutput(this, 'MigrateSecurityGroup', { value: apiSg.securityGroupId });
     new CfnOutput(this, 'AttachmentsBucket', { value: bucket.bucketName });

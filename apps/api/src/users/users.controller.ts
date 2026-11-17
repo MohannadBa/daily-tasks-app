@@ -213,6 +213,9 @@ export class UsersController {
     if (!target) throw notFound('User not found');
     const delivery = body.passwordDelivery ?? (body.temporaryPassword ? undefined : this.identity.defaultDelivery());
     const r = await this.identity.adminResetPassword(target.email, delivery, body.temporaryPassword);
+    // A reset is often a response to a suspected compromise: revoke every existing session (Cognito
+    // refresh tokens). Access tokens left alive are refused by the guard while mustChangePassword is set.
+    await this.identity.signOutEverywhere(target.email);
     await this.prisma.$transaction(async (tx) => {
       await tx.user.update({ where: { id }, data: { mustChangePassword: true, ...(r.passwordHash ? { passwordHash: r.passwordHash } : {}) } });
       await audit(tx, user, 'PASSWORD_RESET', 'USER', id, { mode: r.mode, delivery: delivery ?? 'ADMIN_CHOSEN' });

@@ -34,6 +34,7 @@ function DocIcon({ doc, className }: { doc: ProjectDocumentDto; className?: stri
 function Preview({ doc, onClose }: { doc: ProjectDocumentDto; onClose: () => void }) {
   const { t } = useT();
   const q = useQuery({ queryKey: ['doc-preview', doc.id], queryFn: () => api.documents.downloadUrl(doc.id, true), staleTime: 60_000 });
+  const [broken, setBroken] = useState(false);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
     window.addEventListener('keydown', onKey);
@@ -59,10 +60,12 @@ function Preview({ doc, onClose }: { doc: ProjectDocumentDto; onClose: () => voi
             <SkeletonList rows={2} className="w-1/2" />
           ) : q.error ? (
             <ErrorBox error={q.error} />
+          ) : broken ? (
+            <p className="text-sm text-slate-500">{t('The file could not be loaded. Try downloading it instead.')}</p>
           ) : q.data?.inline && doc.contentType === 'application/pdf' ? (
             <iframe src={q.data.url} title={doc.title} className="h-full w-full" />
           ) : q.data?.inline ? (
-            <img src={q.data.url} alt={doc.title} className="max-h-full max-w-full object-contain" />
+            <img src={q.data.url} alt={doc.title} onError={() => setBroken(true)} className="max-h-full max-w-full object-contain" />
           ) : (
             <p className="text-sm text-slate-500">{t('Preview is not available for this file type.')}</p>
           )}

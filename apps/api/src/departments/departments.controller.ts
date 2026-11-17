@@ -38,7 +38,7 @@ export class DepartmentsController {
     const rows = await this.prisma.department.findMany({
       where: { companyId: user.companyId, ...(q.includeInactive && user.role === UserRole.ADMIN ? {} : { isActive: true }) },
       include: countActive,
-      orderBy: [{ sortOrder: 'asc' }, { nameAr: 'asc' }],
+      orderBy: [{ isActive: 'desc' }, { sortOrder: 'asc' }, { nameAr: 'asc' }], // inactive ones last
     });
     return rows.map(toDto);
   }

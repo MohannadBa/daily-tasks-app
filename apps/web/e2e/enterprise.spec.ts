@@ -136,6 +136,8 @@ test('5/6/7/8/15. employee starts, submits with an image; manager approves from 
   // Image attachments are previewed in place: the thumbnail really renders the stored image…
   const thumb = card.getByRole('button', { name: 'Preview handover.png' });
   await expect(thumb.locator('img')).toBeVisible();
+  // Thumbnails are loading="lazy": scroll the card into view (the shared inbox may hold older items above it).
+  await thumb.scrollIntoViewIfNeeded();
   await expect.poll(() => thumb.locator('img').evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)).toBe(true);
   // …and opens in an in-app viewer (no download needed).
   await thumb.click();

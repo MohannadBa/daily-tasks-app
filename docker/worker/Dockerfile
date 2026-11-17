@@ -46,6 +46,8 @@ COPY --from=build --chown=node:node /app/packages/shared-types/dist packages/sha
 
 COPY --from=build --chown=node:node /app/apps/worker/dist apps/worker/dist
 COPY --chown=node:node apps/worker/assets apps/worker/assets
+# Public Amazon RDS CA bundle: lets DB_SSL_CA_FILE verify the database certificate.
+COPY --chown=node:node docker/certs/rds-global-bundle.pem /app/certs/rds-global-bundle.pem
 USER node
 EXPOSE 3002
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \

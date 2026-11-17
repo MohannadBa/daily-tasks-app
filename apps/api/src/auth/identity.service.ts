@@ -167,6 +167,13 @@ export class IdentityService {
       if (name === 'InvalidPasswordException') throw new BadRequestException('The new password does not meet the password policy');
       throw new BadRequestException('Invalid or expired code');
     }
+    // The user chose a new password with an e-mailed code (self-service or admin-initiated reset):
+    // the "must change password" flag is satisfied — do not force a second change.
+    const user = await this.prisma.user.findUnique({ where: { email } });
+    if (user) {
+      await this.prisma.user.update({ where: { id: user.id }, data: { mustChangePassword: false, passwordChangedAt: new Date() } });
+      await this.audit(user.companyId, user.id, 'PASSWORD_CHANGED', user.id, { via: 'reset-code' });
+    }
   }
 
   /**

@@ -59,6 +59,8 @@ Set by the CDK stack in AWS, by `docker-compose.yml` locally. **No real secret i
 | `LOG_LEVEL` | ✓ | ✓ | | stack | `info` |
 | `DATABASE_URL` | ✓ | ✓ | | built at start from `DB_HOST/DB_PORT/DB_USERNAME/DB_PASSWORD/DB_NAME` | Secrets Manager (RDS-generated); `sslmode=require` |
 | `DB_SSLMODE`, `DB_CONNECTION_LIMIT` | ✓ | ✓ | | optional | defaults `require`, `10` |
+| `DB_SSL_CA_FILE` | ✓ | ✓ | | stack = `/app/certs/rds-global-bundle.pem` (baked into the images) | verifies the RDS server certificate + host name (Prisma `sslaccept=strict`); unset = encrypted but unverified TLS |
+| `PERSONAL_DATA_KEY_PREVIOUS` | ✓ | | | Secrets Manager, **only during a key rotation** (`<env>:personalDataKeyPreviousSecretArn`) | decrypt fallback; see OPERATIONS.md §8 |
 | `AWS_REGION` | ✓ | ✓ | | stack | |
 | `AWS_ENDPOINT_URL`, `S3_PUBLIC_ENDPOINT`, `S3_FORCE_PATH_STYLE` | ✓ | ✓ | | — | LocalStack only; unset in AWS |
 | `S3_BUCKET` | ✓ | ✓ | | stack | |
@@ -89,6 +91,8 @@ Set by the CDK stack in AWS, by `docker-compose.yml` locally. **No real secret i
 
 The `VAPID_*` names are accepted as aliases (the `WEB_PUSH_*` name wins if both are set). Production refuses the development key pair shipped in `docker-compose.yml`.
 
+> The complete, approval-gated staging procedure is [STAGING_PLAN.md](STAGING_PLAN.md); backups, rollback, alarms, incident response and key rotation are in [OPERATIONS.md](OPERATIONS.md).
+
 ## First-time setup
 1. `npx cdk bootstrap aws://<account>/<region>` (once per account/region).
 2. `pnpm --filter @dailytasks/aws-cdk run deploy:registry`
@@ -110,7 +114,7 @@ The `VAPID_*` names are accepted as aliases (the `WEB_PUSH_*` name wins if both 
      --task-definition <MigrateTaskDefinition> \
      --network-configuration "awsvpcConfiguration={subnets=[<MigrateSubnets>],securityGroups=[<MigrateSecurityGroup>]}"
    ```
-7. Create the first admin: add a `Company` row and a `User` row (`role=ADMIN`) via the migration task / a bastion session, then `aws cognito-idp admin-create-user --user-pool-id <UserPoolId> --username <email>`. The admin signs in, sets a password and invites everyone else from the Team page.
+7. Create the first company + admin **without SQL**: run the `bootstrap-admin` one-off task (exact command in [STAGING_PLAN.md](STAGING_PLAN.md) §5.7; it refuses if an admin already exists), then `aws cognito-idp admin-create-user … --desired-delivery-mediums EMAIL`. The admin signs in, chooses a password and creates everyone else from **Administration**. Escrow the personal-data key now ([OPERATIONS.md](OPERATIONS.md) §8).
 8. Confirm the SNS alarm subscription e-mail.
 9. Run the **real-device checklist** (docs/REAL_DEVICE_TESTS.md) on staging. Only then deploy production the same way with the production context and the **same image tag**.
 
@@ -129,28 +133,31 @@ The `VAPID_*` names are accepted as aliases (the `WEB_PUSH_*` name wins if both 
 | Push config | `curl https://<domain>/api/v1/push/vapid-public-key` → `{ "enabled": true, "publicKey": "B…" }` |
 | Push end to end | Notification settings → Enable → Send test notification on a phone (real-device checklist) |
 
-## Estimated monthly cost (USD, approximate)
+## Estimated monthly cost (USD, approximate — updated for the enterprise release)
 
-Assumptions: on-demand list prices (us-east-1 reference; **me-central-1 (UAE) is typically ~10–20% higher**), 730 h/month, ≤ 50 users, ~20 GB/month NAT traffic, 50 GB attachments, ~5 GB/month logs, no free tier, no Savings Plans/Reserved Instances, taxes excluded. **Verify with the AWS Pricing Calculator for the chosen region before approving.**
+Assumptions: on-demand list prices (us-east-1 reference; **me-central-1 (UAE) is typically ~10–20 % higher**, eu-north-1 is close to us-east-1), 730 h/month, ≤ 50 users, ~20 GB/month NAT traffic, 50 GB of files, ~5 GB/month logs, no free tier, no Savings Plans/Reserved Instances, taxes excluded. Fargate: $0.04048 per vCPU-h + $0.004445 per GB-h. **Verify with the AWS Pricing Calculator for the chosen region before approving.**
 
 | Item | Staging | Production |
 |---|---:|---:|
-| ECS Fargate (staging 3 × 0.25 vCPU/0.5 GB; prod 2 api + 2 web × 0.5 vCPU/1 GB + 1 worker 0.25/0.5) | ~27 | ~81 |
-| RDS PostgreSQL (staging t4g.micro single-AZ 20 GB; prod t4g.medium Multi-AZ 50 GB gp3) | ~14 | ~107 |
-| NAT gateways (1 / 2) incl. data processing | ~34 | ~67 |
-| Application Load Balancer (+ LCUs) | ~20 | ~25 |
-| Public IPv4 addresses (ALB + NAT EIPs, $0.005/h each) | ~11 | ~15 |
-| CloudWatch (logs, Container Insights, ~15 alarms) | ~5 | ~15–35 |
-| S3 (storage + requests), ECR images | ~2 | ~3 |
-| Secrets Manager (2 secrets), Route 53 zone + queries | ~1.5 | ~1.5 |
-| SQS, EventBridge Scheduler, SNS | <1 | <1 |
-| Cognito (Lite tier, < 10 000 MAU) | 0 | 0 |
-| Web Push (browser push services) | 0 | 0 |
-| ACM certificate | 0 | 0 |
-| **Total (us-east-1 reference)** | **≈ $115 / month** | **≈ $315–335 / month** |
-| **Rough me-central-1 estimate** | **≈ $125–140** | **≈ $350–400** |
+| **Compute** — ECS Fargate (staging: api + web 0.25 vCPU/0.5 GB, worker 0.5/1 GB for Chromium; prod: 2 api + 2 web 0.5/1 GB, worker 0.5/2 GB; autoscaling peaks extra) | ~36 | ~93 |
+| **Database** — RDS PostgreSQL 16 (staging t4g.micro single-AZ 20 GB gp3; prod t4g.medium Multi-AZ 50 GB gp3) | ~14 | ~107 |
+| **Backups** — automated snapshots up to the DB size are free; PITR logs; manual pre-release snapshots (~$0.095/GB-month) | ~0–2 | ~2–5 |
+| **NAT gateway(s)** (1 / 2) incl. data processing | ~34 | ~67 |
+| **Load balancer** — ALB + LCUs | ~20 | ~25 |
+| Public IPv4 addresses (ALB ×2 AZ + NAT EIPs, $0.005/h each) | ~11 | ~15 |
+| **Logs & monitoring** — CloudWatch logs (14 / 90 days), Container Insights (enhanced in prod), 10 alarms, metric filters | ~5 | ~20–35 |
+| **Storage** — S3 files/documents/reports + requests; ECR images | ~2 | ~3–5 |
+| **Data transfer** out to the internet (first 100 GB/month free) | ~0 | ~0–5 |
+| **Secrets** — Secrets Manager (RDS, personal-data key; VAPID) 3 × $0.40 | ~1.2 | ~1.2 |
+| **Domain & DNS** — Route 53 hosted zone $0.50 + queries; domain registration ~$13–15/year if bought via Route 53 | ~0.6 (+domain) | ~0.6 (+domain) |
+| **Notifications** — SQS, EventBridge Scheduler, SNS alarms; Web Push via browser push services (free) | <1 | <1 |
+| **E-mail** — Cognito default sender (staging) / SES for production (~$0.10 per 1 000 e-mails) | 0 | <1 |
+| Cognito (Lite tier, < 10 000 MAU), ACM certificate | 0 | 0 |
+| **Total (us-east-1 reference)** | **≈ $125 / month** | **≈ $335–360 / month** |
+| **Rough me-central-1 estimate** | **≈ $135–150** | **≈ $370–430** |
+| Optional: AWS WAF with a rate-based rule (recommended for production) | — | ~$10–15 |
 
-Biggest levers: 1-year Compute Savings Plan (≈ −20–30% on Fargate), RDS Reserved Instance (≈ −30–40%), a single NAT gateway in production (−$33, less AZ resilience), Fargate Spot for staging and the worker, stopping staging outside working hours. Data transfer out is small at this scale (first 100 GB/month to the internet is free).
+Biggest levers: 1-year Compute Savings Plan (≈ −20–30 % on Fargate), RDS Reserved Instance (≈ −30–40 %), Fargate Spot for staging, a single NAT gateway in production (−$33, less AZ resilience), stopping staging outside working hours (−~40 % of staging compute; RDS can be stopped up to 7 days). Set an **AWS Budget** alert (e.g. $150 staging, $450 production).
 
 ## Security notes
 * No public S3 access; all object access is via short-lived pre-signed URLs issued after authorization.

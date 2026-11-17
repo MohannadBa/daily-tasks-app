@@ -158,6 +158,25 @@ describe('AppStack', () => {
     expect(policies).toContain('cognito-idp:AdminUserGlobalSignOut');
   });
 
+  it('least privilege: the API role cannot delete S3 objects; only the worker can', () => {
+    const policies = Object.entries(prod.findResources('AWS::IAM::Policy')) as Array<[string, { Properties: { PolicyDocument: { Statement: Array<{ Action: string | string[] }> } } }]>;
+    const actions = (prefix: string) =>
+      policies.filter(([id]) => id.startsWith(prefix)).flatMap(([, p]) => p.Properties.PolicyDocument.Statement.flatMap((s) => (Array.isArray(s.Action) ? s.Action : [s.Action])));
+    const api = actions('ApiTaskDefTaskRole');
+    expect(api).toEqual(expect.arrayContaining(['s3:GetObject*', 's3:PutObject']));
+    expect(api.filter((a) => a.startsWith('s3:Delete'))).toEqual([]);
+    expect(actions('WorkerTaskDefTaskRole')).toContain('s3:DeleteObject*');
+  });
+
+  it('database TLS: api, worker and migrate verify the RDS certificate with the bundled CA', () => {
+    const defs = Object.values(prod.findResources('AWS::ECS::TaskDefinition')).flatMap(
+      (r) => (r as { Properties: { ContainerDefinitions: Array<{ Name: string; Environment?: Array<{ Name: string; Value: unknown }> }> } }).Properties.ContainerDefinitions,
+    );
+    for (const name of ['api', 'worker', 'migrate']) {
+      expect(defs.find((c) => c.Name === name)?.Environment?.find((e) => e.Name === 'DB_SSL_CA_FILE')?.Value).toBe('/app/certs/rds-global-bundle.pem');
+    }
+  });
+
   it('enterprise: worker has memory for Chromium and reports expire', () => {
     prod.hasResourceProperties('AWS::ECS::TaskDefinition', { Family: Match.stringLikeRegexp('Worker'), Memory: '2048' });
     prod.hasResourceProperties('AWS::S3::Bucket', {

@@ -59,6 +59,37 @@ const T: Record<string, [string, string]> = {
   charged: ['محتسب', 'Charged'],
   page: ['صفحة', 'Page'],
 };
+/** Task history actions (the employee-visible timeline), [Arabic, English]. */
+const HISTORY: Record<string, [string, string]> = {
+  CREATED: ['إنشاء المهمة', 'Task created'],
+  UPDATED: ['تحديث المهمة', 'Task updated'],
+  DEADLINE_CHANGED: ['تغيير الموعد النهائي', 'Deadline changed'],
+  PRIORITY_CHANGED: ['تغيير الأولوية', 'Priority changed'],
+  DEPARTMENT_CHANGED: ['تغيير الإدارة', 'Department changed'],
+  APPROVER_CHANGED: ['تغيير المعتمِد', 'Approver changed'],
+  REASSIGNED: ['إعادة الإسناد', 'Reassigned'],
+  STARTED: ['بدء العمل', 'Work started'],
+  COMMENTED: ['تعليق', 'Comment'],
+  ATTACHMENT_ADDED: ['إضافة مرفق', 'Attachment added'],
+  SUBMITTED: ['تسليم للمراجعة', 'Submitted for review'],
+  FORWARDED: ['إحالة للاعتماد', 'Forwarded for approval'],
+  RETURNED: ['إعادة للزميل', 'Returned to colleague'],
+  APPROVED: ['اعتماد', 'Approved'],
+  REJECTED: ['رفض التسليم', 'Submission rejected'],
+  SUBMISSION_WITHDRAWN: ['سحب التسليم', 'Submission withdrawn'],
+  COMPLETED: ['إنجاز', 'Completed'],
+  REOPENED: ['إعادة فتح', 'Reopened'],
+  TRANSFER_REQUESTED: ['طلب تحويل', 'Transfer requested'],
+  TRANSFER_ACCEPTED: ['قبول التحويل', 'Transfer accepted'],
+  TRANSFER_DECLINED: ['الاعتذار عن التحويل', 'Transfer declined'],
+  TRANSFER_CANCELLED: ['إلغاء التحويل', 'Transfer cancelled'],
+  EXTENSION_REQUESTED: ['طلب تمديد', 'Extension requested'],
+  EXTENSION_DECIDED: ['قرار التمديد', 'Extension decided'],
+  EXTENSION_CANCELLED: ['إلغاء طلب التمديد', 'Extension request cancelled'],
+  DOCUMENT_REGISTERED: ['تسجيل الملفات في المستندات', 'Files registered in documents'],
+};
+export const historyLabel = (action: string, l: L) => HISTORY[action]?.[l === 'ar' ? 0 : 1] ?? action;
+
 const STATUS: Record<string, [string, string]> = {
   ASSIGNED: ['مسندة', 'Assigned'],
   IN_PROGRESS: ['قيد التنفيذ', 'In progress'],
@@ -101,17 +132,23 @@ export function formatDuration(ms: number, l: L): string {
   return parts.filter(Boolean).join(l === 'ar' ? ' و ' : ' ');
 }
 
-/** All report dates in Asia/Riyadh (company time zone). */
+/**
+ * All report dates in Asia/Riyadh (company time zone). Spaces are non-breaking (a date never wraps
+ * in a narrow table column) and Arabic dates are bidi-isolated (RLI … PDI).
+ */
 export function formatDate(iso: string | null | undefined, l: L): string {
   if (!iso) return '—';
-  return new Intl.DateTimeFormat(l === 'ar' ? 'ar-SA-u-nu-latn-ca-gregory' : 'en-GB', {
+  const s = new Intl.DateTimeFormat(l === 'ar' ? 'ar-SA-u-nu-latn-ca-gregory' : 'en-GB', {
     timeZone: 'Asia/Riyadh',
     year: 'numeric',
     month: 'short',
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
-  }).format(new Date(iso));
+  })
+    .format(new Date(iso))
+    .replace(/[ \u202f]/g, '\u00a0');
+  return l === 'ar' ? `\u2067${s}\u2069` : s;
 }
 
 let assetCache: { fontCss: string; logo: string } | null = null;
@@ -148,7 +185,7 @@ function taskSection(t: ReportTask, ds: ReportDataset, detailed: boolean): strin
       ? `<table class="grid"><thead><tr>${head.map((h) => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`
       : `<p class="muted">${esc(tr('none'))}</p>`;
   const late = t.completedLate === true || (t.status !== 'COMPLETED' && t.overdueMs > 0);
-  return `<section class="task">
+  return `<section class="task${detailed ? '' : ' compact'}">
   <h3>${esc(t.title)} <span class="badge ${t.status === 'COMPLETED' ? 'ok' : late ? 'bad' : 'info'}">${esc(st(t.status))}</span>${late ? ` <span class="badge bad">${esc(tr('completedLate'))}</span>` : ''}</h3>
   ${detailed && t.description ? `<p class="desc">${esc(t.description)}</p>` : ''}
   <table class="kv">
@@ -203,7 +240,7 @@ function taskSection(t: ReportTask, ds: ReportDataset, detailed: boolean): strin
         )}`
       : ''
   }
-  ${detailed && t.history ? `<h4>${esc(tr('history'))}</h4>${table([tr('createdAt'), tr('employee'), tr('status')], t.history.map((h) => [esc(formatDate(h.at, l)), esc(h.actor ?? '—'), esc(h.action)]))}` : ''}
+  ${detailed && t.history ? `<h4>${esc(tr('history'))}</h4>${table([tr('createdAt'), tr('employee'), tr('status')], t.history.map((h) => [esc(formatDate(h.at, l)), esc(h.actor ?? '—'), esc(historyLabel(h.action, l))]))}` : ''}
 </section>`;
 }
 
@@ -244,6 +281,9 @@ header .meta{font-size:8.5pt;color:#57606a}
 h2{font-size:13pt;color:#7a5a22;margin:14px 0 6px}
 h3{font-size:12pt;margin:0 0 6px}
 h4{font-size:10pt;margin:10px 0 4px;color:#57606a}
+h2,h3,h4{break-after:avoid;page-break-after:avoid}
+thead{display:table-header-group}
+section.task.compact{break-inside:avoid;page-break-inside:avoid}
 .tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
 .tile{border:1px solid #e6d5b5;background:#fbf7ef;border-radius:6px;padding:6px 8px}
 .tile b{display:block;font-size:13pt;color:#1f2328}
@@ -279,8 +319,23 @@ ${ds.tasks.map((t) => taskSection(t, ds, detailed)).join('\n')}
 
 /* ============================== PDF ============================== */
 
+export interface PdfFooter {
+  company: string;
+  ref: string;
+  locale: L;
+}
+
 export interface PdfRenderer {
-  render(html: string, footer: string): Promise<Buffer>;
+  render(html: string, footer: PdfFooter): Promise<Buffer>;
+}
+
+/** Footer for every page: company · report reference · page X of Y, laid out in the report's direction. */
+export function footerHtml(f: PdfFooter): string {
+  const rtl = f.locale === 'ar';
+  const page = rtl
+    ? 'صفحة <span class="pageNumber"></span> من <span class="totalPages"></span>'
+    : 'Page <span class="pageNumber"></span> of <span class="totalPages"></span>';
+  return `<div dir="${rtl ? 'rtl' : 'ltr'}" style="font-size:7pt;width:100%;text-align:center;color:#8c959f;font-family:sans-serif">${esc(f.company)} · <span dir="ltr">${esc(f.ref)}</span> · ${page}</div>`;
 }
 
 /** Headless Chromium via playwright-core (system Chromium; no browser download). */
@@ -290,7 +345,7 @@ export class ChromiumPdfRenderer implements PdfRenderer {
     private readonly timeoutMs: number,
   ) {}
 
-  async render(html: string, footer: string): Promise<Buffer> {
+  async render(html: string, footer: PdfFooter): Promise<Buffer> {
     const { chromium } = await import('playwright-core');
     const browser = await chromium.launch({
       executablePath: this.executablePath,
@@ -309,7 +364,7 @@ export class ChromiumPdfRenderer implements PdfRenderer {
         printBackground: true,
         displayHeaderFooter: true,
         headerTemplate: '<span></span>',
-        footerTemplate: `<div style="font-size:7pt;width:100%;text-align:center;color:#8c959f">${esc(footer)} · <span class="pageNumber"></span> / <span class="totalPages"></span></div>`,
+        footerTemplate: footerHtml(footer),
         margin: { top: '16mm', bottom: '18mm', left: '12mm', right: '12mm' },
       });
     } finally {
@@ -333,7 +388,7 @@ export async function processReport(prisma: PrismaClient, store: ObjectStore, re
     if (!job.dataset) throw new Error('report dataset missing');
     const ds = job.dataset as unknown as ReportDataset;
     const html = renderReportHtml(ds);
-    const pdf = await renderer.render(html, `${ds.companyName} · ${job.id.slice(0, 8)}`);
+    const pdf = await renderer.render(html, { company: ds.companyName, ref: job.id.slice(0, 8), locale: ds.locale });
     const key = `reports/${job.companyId}/${job.id}.pdf`;
     await store.put(key, pdf, 'application/pdf');
     // The dataset is dropped once rendered (it may contain private rating data).

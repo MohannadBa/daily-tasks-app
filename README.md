@@ -68,6 +68,10 @@ pnpm cdk:synth       # synthesize AWS CloudFormation (no deployment)
 ```
 
 ## Documentation
+- [Staging plan](docs/STAGING_PLAN.md) — approval-gated HTTPS staging deployment (nothing deployed yet)
+- [Operations](docs/OPERATIONS.md) — backups, rollback, migrations, alarms, incident response, key rotation
+- [Cognito tests](docs/COGNITO_TESTS.md) — local/contract evidence vs. real staging verification (not run yet)
+- [Visual QA](docs/VISUAL_QA.md) — screens and PDFs reviewed, issues fixed
 - [User guide](docs/USER_GUIDE.md) — what admins, managers and employees can do, screen by screen
 - [Time accounting & workflow](docs/TIME_ACCOUNTING.md) — approval, transfers, extensions, accountable time
 - [Enterprise API](docs/API_ENTERPRISE.md) — departments, workflow, documents, personal tasks, reports, accounts
