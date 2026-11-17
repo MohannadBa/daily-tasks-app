@@ -5,10 +5,11 @@ import type { AuditEntryDto, CreatedUserDto, UserDto } from '@dailytasks/shared-
 import { adminResetPasswordSchema, inviteUserSchema, updateUserSchema, userDepartmentsSchema, z } from '@dailytasks/validation';
 import type { AuthUser } from '../auth/auth.types';
 import { CurrentUser, Roles } from '../auth/decorators';
+import { AccessGate } from '../auth/access-gate';
 import { IdentityService } from '../auth/identity.service';
 import { AuthModule } from '../auth/auth.module';
 import { audit } from '../common/audit';
-import { badRequest, conflict, ErrorCode, notFound } from '../common/errors';
+import { badRequest, conflict, ErrorCode, forbidden, notFound } from '../common/errors';
 import { ApiZodBody, ZBody, ZQuery } from '../common/zod';
 import { OutboxService } from '../outbox/outbox.service';
 import { PrismaService, type Tx } from '../prisma/prisma.service';
@@ -45,6 +46,7 @@ export class UsersController {
     private readonly prisma: PrismaService,
     private readonly identity: IdentityService,
     private readonly outbox: OutboxService,
+    private readonly gate: AccessGate,
   ) {}
 
   /** Admins see everyone; project managers see users so they can view project staff. */
@@ -73,6 +75,10 @@ export class UsersController {
   @Roles(UserRole.ADMIN)
   @ApiZodBody(inviteUserSchema)
   async invite(@CurrentUser() user: AuthUser, @ZBody(inviteUserSchema) body: z.infer<typeof inviteUserSchema>): Promise<CreatedUserDto> {
+    // Acceptance mode: only allow-listed testers can be provisioned (no ordinary employees, no invitation e-mails).
+    if (!this.gate.allows(body.email)) {
+      throw forbidden('The system is in restricted acceptance mode: only allow-listed test accounts can be created.', ErrorCode.ACCESS_RESTRICTED);
+    }
     const exists = await this.prisma.user.findUnique({ where: { email: body.email } });
     if (exists) throw conflict(ErrorCode.CONFLICT, 'A user with this email already exists');
     await this.validateDepartments(user.companyId, body.departments.map((d) => d.departmentId));

@@ -30,6 +30,8 @@ docker compose up -d --build # postgres(5433) localstack(4566) migrate api(3000)
 pnpm test                    # needs compose postgres running (tests use dailytasks_test DB)
 pnpm lint && pnpm typecheck
 pnpm test:docker             # end-to-end smoke test against the running compose stack (~75s)
+scripts/deploy-production.sh check|…|deploy   # production-first deploy driven by .env.production (docs/PRODUCTION_PLAN.md); asks before every AWS change
+scripts/deploy-staging.sh check|…|deploy      # optional staging (docs/STAGING_PLAN.md, superseded)
 node scripts/cognito-staging-test.mjs   # Cognito verification against a deployed staging API (env vars in docs/COGNITO_TESTS.md)
 pnpm cdk:synth               # synth registry+staging; production needs HTTPS context (synth:production). NEVER deploy without explicit human approval
 ```
@@ -69,6 +71,13 @@ Demo logins (seed, local only): `manager1@dailytasks.local` / `employee1@dailyta
 - Do not claim production readiness until docs/REAL_DEVICE_TESTS.md is completed on physical devices.
 - Browser E2E: `pnpm --filter @dailytasks/web test:e2e` (Playwright with installed Chrome) against the running compose stack.
 - Tests: API integration tests in `apps/api/test/*.e2e-spec.ts` (real Postgres, fake S3); worker tests in `apps/worker/test`.
+
+## Production launch gate & ops
+- `ACCESS_MODE=restricted` + `ACCESS_ALLOWLIST` (`apps/api/src/auth/access-gate.ts`): enforced in AuthGuard, IdentityService (login/challenge/refresh/forgot), RealtimeService and user provisioning. Production defaults to restricted; opening is an explicit redeploy. Never add an endpoint that bypasses the guard.
+- Cognito e-mail goes through SES (`DailyTasks-Mail` stack, deploy + verify first). WAF on the ALB in production; WAF logs must keep `authorization`/`cookie` redacted.
+- Backups: production replicates RDS automated backups to **eu-west-1** (14 days) with the KMS key from the `DailyTasks-DR` stack (`production:backupReplicaKmsKeyArn`); `DeleteAutomatedBackups=false`. Never add automatic deletion of backups, snapshots, the DR key or the DR stack.
+- Secret names: `dailytasks-<env>/db`, `dailytasks-<env>/personal-data-key`, `dailytasks-production/vapid-private-key`.
+- Read-only ops commands in the API image: `db-tls-check.js`, `verify-restore.js` (with `DB_HOST_OVERRIDE=*.rds.amazonaws.com`), plus `bootstrap-admin.js`, `rekey-personal.js`.
 
 ## AWS
 Do not run `cdk deploy`, `push-images.sh`, or create any AWS resources unless the human explicitly approves. See docs/DEPLOYMENT.md.

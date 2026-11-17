@@ -14,11 +14,15 @@ export interface EnvironmentConfig {
     maxAllocatedStorageGb: number;
     backupRetentionDays: number;
     deletionProtection: boolean;
+    /** Cross-region replication of automated backups (production: eu-west-1 / Ireland). */
+    backupReplicationRegion?: string;
   };
   api: ServiceSize;
   web: ServiceSize;
   worker: ServiceSize;
   logRetentionDays: number;
+  /** Region the environment must be deployed to (production: eu-north-1). Synthesis fails elsewhere. */
+  requiredRegion?: string;
 }
 
 export interface ServiceSize {
@@ -41,8 +45,9 @@ export const environments: Record<EnvironmentConfig['name'], EnvironmentConfig> 
   },
   production: {
     name: 'production',
+    requiredRegion: 'eu-north-1',
     natGateways: 2,
-    db: { instanceClass: 't4g.medium', multiAz: true, allocatedStorageGb: 50, maxAllocatedStorageGb: 500, backupRetentionDays: 14, deletionProtection: true },
+    db: { instanceClass: 't4g.medium', multiAz: true, allocatedStorageGb: 50, maxAllocatedStorageGb: 500, backupRetentionDays: 14, deletionProtection: true, backupReplicationRegion: 'eu-west-1' },
     api: { cpu: 512, memoryMiB: 1024, minTasks: 2, maxTasks: 6 },
     web: { cpu: 512, memoryMiB: 1024, minTasks: 2, maxTasks: 4 },
     worker: { cpu: 512, memoryMiB: 2048, minTasks: 1, maxTasks: 3 },

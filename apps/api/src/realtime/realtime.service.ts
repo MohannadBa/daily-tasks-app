@@ -8,6 +8,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import type { ApiEnv } from '@dailytasks/config';
 import { REALTIME_CHANNEL, REALTIME_PATH, type RealtimeEnvelope, type RealtimeServerMessage } from '@dailytasks/shared-types';
 import { AuthModule } from '../auth/auth.module';
+import { AccessGate } from '../auth/access-gate';
 import { TokenService } from '../auth/token.service';
 import { API_ENV } from '../config/config.module';
 import { PrismaService } from '../prisma/prisma.service';
@@ -66,6 +67,7 @@ export class RealtimeService implements OnApplicationBootstrap, OnModuleDestroy 
     private readonly tokens: TokenService,
     private readonly prisma: PrismaService,
     @Inject(API_ENV) private readonly env: ApiEnv,
+    private readonly gate: AccessGate,
   ) {
     this.origins = env.CORS_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean);
   }
@@ -128,7 +130,7 @@ export class RealtimeService implements OnApplicationBootstrap, OnModuleDestroy 
     try {
       const verified = await this.tokens.verifyAccessToken(token);
       const user = await this.prisma.user.findUnique({ where: verified.mode === 'local' ? { id: verified.subject } : { cognitoSub: verified.subject } });
-      if (!user?.isActive) return this.reject(socket, 401, 'Unauthorized');
+      if (!user?.isActive || !this.gate.allows(user.email)) return this.reject(socket, 401, 'Unauthorized');
       userId = user.id;
       const exp = (jwt.decode(token) as { exp?: number } | null)?.exp;
       expMs = exp ? exp * 1000 : undefined;

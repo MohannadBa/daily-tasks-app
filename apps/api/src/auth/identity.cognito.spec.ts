@@ -9,6 +9,7 @@ import {
   RespondToAuthChallengeCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
 import type { ApiEnv } from '@dailytasks/config';
+import { AccessGate } from './access-gate';
 import { IdentityService } from './identity.service';
 
 /**
@@ -21,14 +22,14 @@ const env = { AUTH_MODE: 'cognito', AWS_REGION: 'eu-north-1', COGNITO_USER_POOL_
 const EMAIL = 'nora@example.com';
 const user = { id: 'u1', companyId: 'c1', email: EMAIL, isActive: true, mustChangePassword: true };
 
-function setup(respond: (cmd: unknown) => unknown = () => ({})) {
+function setup(respond: (cmd: unknown) => unknown = () => ({}), gateEnv: Record<string, string> = {}) {
   const sent: unknown[] = [];
   const prisma = {
     user: { findUnique: jest.fn().mockResolvedValue(user), update: jest.fn().mockResolvedValue(user) },
     auditLog: { create: jest.fn().mockResolvedValue({}) },
   };
   const tokens = { verifyAccessToken: jest.fn().mockResolvedValue({ subject: 'sub-1', mode: 'cognito' }) };
-  const svc = new IdentityService(env, prisma as never, tokens as never);
+  const svc = new IdentityService(env, prisma as never, tokens as never, new AccessGate({ ...env, ...gateEnv } as never));
   (svc as unknown as { cognito: { send: (c: unknown) => Promise<unknown> } }).cognito = {
     send: async (cmd: unknown) => {
       sent.push(cmd);
@@ -42,6 +43,20 @@ function setup(respond: (cmd: unknown) => unknown = () => ({})) {
 const named = (name: string) => Object.assign(new Error(name), { name });
 
 describe('IdentityService — Cognito contract (stubbed client)', () => {
+  it('restricted acceptance mode: non-allow-listed users are refused before Cognito is called (login, refresh, forgot-password)', async () => {
+    const gate = { ACCESS_MODE: 'restricted', ACCESS_ALLOWLIST: 'tester@example.com' };
+    const ok = { AuthenticationResult: { AccessToken: 'a', RefreshToken: 'r', ExpiresIn: 3600 } };
+    const { svc, sent } = setup(() => ok, gate);
+    await expect(svc.login(EMAIL, 'Whatever1')).rejects.toThrow('Invalid email or password');
+    await svc.forgotPassword(EMAIL); // silently ignored (no enumeration)
+    expect(sent).toHaveLength(0);
+    // Refresh: Cognito would issue tokens, but the account behind them is not allow-listed.
+    await expect(svc.refresh('r')).rejects.toThrow();
+    // Allow-listed account works normally (case-insensitive).
+    const allowed = setup(() => ok, { ...gate, ACCESS_ALLOWLIST: 'NORA@example.com' });
+    await expect(allowed.svc.refresh('r')).resolves.toMatchObject({ accessToken: 'a' });
+  });
+
   it('admin-created account (default EMAIL delivery): Cognito generates and e-mails the temporary password; we never see it', async () => {
     const { svc, sent } = setup();
     const r = await svc.provisionUser(EMAIL, 'EMAIL');

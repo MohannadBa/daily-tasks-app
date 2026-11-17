@@ -1,4 +1,4 @@
-import { Annotations, CfnOutput, Duration, RemovalPolicy, Stack, Tags, type StackProps } from 'aws-cdk-lib';
+import { Annotations, CfnOutput, Duration, RemovalPolicy, Stack, Tags, Token, type StackProps } from 'aws-cdk-lib';
 import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as cwActions from 'aws-cdk-lib/aws-cloudwatch-actions';
@@ -18,6 +18,7 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as subs from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
 import type { Construct } from 'constructs';
 import type { EnvironmentConfig, ServiceSize } from './config';
 import { repositoryName, type RepositoryName } from './registry-stack';
@@ -56,7 +57,33 @@ export interface AppStackProps extends StackProps {
   personalDataKeyPreviousSecretArn?: string;
   /** VAPID contact ("sub" claim) push services can use to reach the operator: mailto:… or https://… */
   vapidSubject?: string;
+  /**
+   * Launch gate. Production defaults to `restricted` (acceptance testing: only `accessAllowlist`
+   * e-mails can sign in or be provisioned). Opening to employees = redeploy with `open`.
+   */
+  accessMode?: 'open' | 'restricted';
+  /** Comma-separated allow-listed e-mails for restricted mode. */
+  accessAllowlist?: string;
+  /**
+   * Cognito e-mail through SES (required in production). Address on the hosted-zone domain whose SES
+   * identity is created by the DailyTasks-Mail stack (deploy and verify that stack first).
+   */
+  sesFromAddress?: string;
+  /** Display name for Cognito e-mails. */
+  sesFromName?: string;
+  /**
+   * ARN of the customer-managed KMS key in the backup region (DailyTasks-DR output BackupKeyArn).
+   * Required when the environment replicates backups (production → eu-west-1).
+   */
+  backupReplicaKmsKeyArn?: string;
+  /** Optional WAF IP allow-list (CIDRs, comma-separated): when set, every other source IP is blocked. */
+  allowedCidrs?: string;
+  /** WAF rate limits per source IP per 5 minutes (all requests / sign-in endpoints). */
+  wafRateLimit?: number;
+  wafAuthRateLimit?: number;
 }
+
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 /**
  * One DailyTasks environment (staging or production):
@@ -92,6 +119,9 @@ export class AppStack extends Stack {
 
     /* ----------------------------- Database ---------------------------- */
     const dbSg = new ec2.SecurityGroup(this, 'DbSg', { vpc, description: 'PostgreSQL', allowAllOutbound: false });
+    // Explicit credentials secret so production can RETAIN it together with the final snapshot.
+    const dbCredentials = new rds.DatabaseSecret(this, 'DbCredentials', { username: 'dailytasks', secretName: `${prefix}/db` });
+    dbCredentials.applyRemovalPolicy(isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY);
     const db = new rds.DatabaseInstance(this, 'Database', {
       engine: rds.DatabaseInstanceEngine.postgres({ version: rds.PostgresEngineVersion.VER_16 }),
       instanceType: new ec2.InstanceType(cfg.db.instanceClass),
@@ -99,7 +129,7 @@ export class AppStack extends Stack {
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
       securityGroups: [dbSg],
       databaseName: 'dailytasks',
-      credentials: rds.Credentials.fromGeneratedSecret('dailytasks', { secretName: `${prefix}/db` }),
+      credentials: rds.Credentials.fromSecret(dbCredentials),
       multiAz: cfg.db.multiAz,
       allocatedStorage: cfg.db.allocatedStorageGb,
       maxAllocatedStorage: cfg.db.maxAllocatedStorageGb,
@@ -107,6 +137,13 @@ export class AppStack extends Stack {
       storageEncrypted: true,
       publiclyAccessible: false,
       backupRetention: Duration.days(cfg.db.backupRetentionDays),
+      // 23:00–00:00 UTC = 02:00–03:00 Riyadh; maintenance Friday 00:00–01:00 UTC (03:00 Riyadh, weekend).
+      preferredBackupWindow: '23:00-00:00',
+      preferredMaintenanceWindow: 'fri:00:00-fri:01:00',
+      copyTagsToSnapshot: true,
+      autoMinorVersionUpgrade: true,
+      // Production: automated backups survive deletion of the instance (they expire only by retention).
+      deleteAutomatedBackups: !isProd,
       deletionProtection: cfg.db.deletionProtection,
       removalPolicy: isProd ? RemovalPolicy.SNAPSHOT : RemovalPolicy.DESTROY,
       enablePerformanceInsights: isProd,
@@ -117,6 +154,31 @@ export class AppStack extends Stack {
       }),
     });
     const dbSecret = db.secret!;
+
+    /* ------------------------------ Region pin ------------------------------ */
+    if (cfg.requiredRegion) {
+      if (Token.isUnresolved(this.region)) {
+        Annotations.of(this).addError(`${cfg.name} must be synthesized for an explicit region (${cfg.requiredRegion}): pass -c region=${cfg.requiredRegion}.`);
+      } else if (this.region !== cfg.requiredRegion) {
+        Annotations.of(this).addError(`${cfg.name} is fixed to ${cfg.requiredRegion}; refusing to synthesize for ${this.region}.`);
+      }
+    }
+
+    /* ------------- Cross-region automated backup replication (production → eu-west-1) ------------- */
+    const replicaRegion = cfg.db.backupReplicationRegion;
+    if (replicaRegion) {
+      const keyArn = props.backupReplicaKmsKeyArn;
+      if (!keyArn) {
+        Annotations.of(this).addError(`${cfg.name} replicates backups to ${replicaRegion}: deploy DailyTasks-DR first and pass -c ${cfg.name}:backupReplicaKmsKeyArn=<BackupKeyArn output>.`);
+      } else if (!new RegExp(`^arn:aws[a-z-]*:kms:${replicaRegion}:[0-9]{12}:key/[0-9a-f-]{36}$`).test(keyArn)) {
+        Annotations.of(this).addError(`backupReplicaKmsKeyArn must be a KMS key ARN in ${replicaRegion}`);
+      }
+      if (!Token.isUnresolved(this.region) && this.region === replicaRegion) Annotations.of(this).addError('The backup replication region must differ from the stack region');
+      const cfnDb = db.node.defaultChild as rds.CfnDBInstance;
+      cfnDb.automaticBackupReplicationRegion = replicaRegion;
+      cfnDb.automaticBackupReplicationRetentionPeriod = cfg.db.backupRetentionDays;
+      if (keyArn) cfnDb.automaticBackupReplicationKmsKeyId = keyArn;
+    }
     alarm(new cloudwatch.Alarm(this, 'DbCpuAlarm', { metric: db.metricCPUUtilization(), threshold: 80, evaluationPeriods: 3, alarmDescription: 'RDS CPU > 80%' }));
     alarm(
       new cloudwatch.Alarm(this, 'DbStorageAlarm', {
@@ -151,6 +213,23 @@ export class AppStack extends Stack {
     }
     if (!isProd && !https) {
       Annotations.of(this).addWarning('No HTTPS certificate: the app works in desktop browsers, but PWA install, the service worker and push notifications will NOT work on phones.');
+    }
+
+    /* --------------------- Launch gate (restricted access) --------------------- */
+    const accessMode = props.accessMode ?? (isProd ? 'restricted' : 'open');
+    const allowlist = (props.accessAllowlist ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+    if (accessMode === 'restricted' && allowlist.length === 0) {
+      Annotations.of(this).addError(`${cfg.name} starts in restricted acceptance mode: pass -c ${cfg.name}:accessAllowlist=admin@company.com,tester@company.com (or -c ${cfg.name}:accessMode=open after acceptance).`);
+    }
+    if (allowlist.some((e) => !EMAIL_RE.test(e))) Annotations.of(this).addError('accessAllowlist contains an entry that is not an e-mail address');
+    if (accessMode === 'restricted') Annotations.of(this).addWarning(`RESTRICTED ACCEPTANCE MODE: only ${allowlist.length} allow-listed account(s) can sign in.`);
+
+    /* ------------------------- Cognito e-mail via SES ------------------------- */
+    if (isProd && !props.sesFromAddress) {
+      Annotations.of(this).addError('Production requires SES for Cognito e-mail: deploy DailyTasks-Mail, wait until verified, then pass -c production:sesFromAddress=no-reply@<hostedZoneName>.');
+    }
+    if (props.sesFromAddress && (!EMAIL_RE.test(props.sesFromAddress) || !props.hostedZoneName || !props.sesFromAddress.toLowerCase().endsWith(`@${props.hostedZoneName.toLowerCase()}`))) {
+      Annotations.of(this).addError('sesFromAddress must be an address on the hosted-zone domain (the SES identity created by DailyTasks-Mail).');
     }
 
     /* ------------------------------ Storage ---------------------------- */
@@ -236,6 +315,17 @@ export class AppStack extends Stack {
       accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
       mfa: cognito.Mfa.OPTIONAL,
       mfaSecondFactor: { sms: false, otp: true },
+      ...(props.sesFromAddress && props.hostedZoneName && props.sesFromAddress.toLowerCase().endsWith(`@${props.hostedZoneName.toLowerCase()}`)
+        ? {
+            email: cognito.UserPoolEmail.withSES({
+              fromEmail: props.sesFromAddress,
+              fromName: props.sesFromName ?? 'الراسيات · Al-Rasiyat',
+              sesRegion: this.region,
+              sesVerifiedDomain: props.hostedZoneName,
+            }),
+          }
+        : {}),
+      deletionProtection: isProd,
       userInvitation: {
         emailSubject: 'حسابك في الراسيات · Your Al-Rasiyat account',
         emailBody: 'تمت دعوتك إلى منصة مهام الراسيات. اسم المستخدم: {username} — كلمة المرور المؤقتة: {####}<br><br>You have been invited to Al-Rasiyat. Sign in with {username} and temporary password {####}.',
@@ -279,7 +369,8 @@ export class AppStack extends Stack {
       new logs.LogGroup(this, `${name}Logs`, {
         logGroupName: `/dailytasks/${cfg.name}/${name}`,
         retention: cfg.logRetentionDays as logs.RetentionDays,
-        removalPolicy: RemovalPolicy.DESTROY,
+        // Production logs are evidence (incidents/audits): they survive stack deletion.
+        removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
       });
 
     const dbSecrets = {
@@ -332,6 +423,8 @@ export class AppStack extends Stack {
         COGNITO_CLIENT_ID: userPoolClient.userPoolClientId,
         CORS_ORIGINS: appUrl,
         SWAGGER_ENABLED: isProd ? 'false' : 'true',
+        ACCESS_MODE: accessMode,
+        ...(accessMode === 'restricted' ? { ACCESS_ALLOWLIST: allowlist.join(',') } : {}),
         RUN_MIGRATIONS: 'false', // migrations run as a one-off task (see docs/DEPLOYMENT.md)
         ...vapidPublic,
       },
@@ -529,14 +622,14 @@ export class AppStack extends Stack {
       : alb.addListener('Http', { port: 80 });
     if (certificate) alb.addRedirect({ sourcePort: 80, targetPort: 443 });
 
-    listener.addTargets('Web', {
+    const webTg = listener.addTargets('Web', {
       port: 3000,
       protocol: elbv2.ApplicationProtocol.HTTP,
       targets: [webService],
       healthCheck: { path: '/health', healthyHttpCodes: '200' },
       deregistrationDelay: Duration.seconds(20),
     });
-    listener.addTargets('Api', {
+    const apiTg = listener.addTargets('Api', {
       priority: 10,
       conditions: [elbv2.ListenerCondition.pathPatterns(['/api/*', '/health'])],
       port: 3000,
@@ -555,6 +648,147 @@ export class AppStack extends Stack {
         alarmDescription: 'Elevated 5xx responses from targets',
       }),
     );
+
+    for (const [name, tg] of [['Api', apiTg], ['Web', webTg]] as const) {
+      alarm(
+        new cloudwatch.Alarm(this, `${name}UnhealthyHostsAlarm`, {
+          metric: tg.metrics.unhealthyHostCount({ period: Duration.minutes(1), statistic: 'Maximum' }),
+          threshold: 1,
+          comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+          evaluationPeriods: 3,
+          treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+          alarmDescription: `${name} targets failing load-balancer health checks`,
+        }),
+      );
+    }
+    alarm(
+      new cloudwatch.Alarm(this, 'DbMemoryAlarm', {
+        metric: db.metricFreeableMemory({ period: Duration.minutes(5) }),
+        threshold: 256 * 1024 ** 2,
+        comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+        evaluationPeriods: 3,
+        alarmDescription: 'RDS freeable memory < 256 MB',
+      }),
+    );
+    alarm(
+      new cloudwatch.Alarm(this, 'DbConnectionsAlarm', {
+        metric: db.metricDatabaseConnections({ period: Duration.minutes(5) }),
+        threshold: isProd ? 300 : 60,
+        evaluationPeriods: 2,
+        alarmDescription: 'RDS connection count unusually high (connection leak or runaway scaling)',
+      }),
+    );
+
+    /* -------------------- Load balancer access logs (production) -------------------- */
+    if (isProd) {
+      const albLogs = new s3.Bucket(this, 'AlbAccessLogs', {
+        blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+        encryption: s3.BucketEncryption.S3_MANAGED, // ALB log delivery supports SSE-S3 only
+        enforceSSL: true,
+        objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
+        removalPolicy: RemovalPolicy.RETAIN,
+        lifecycleRules: [{ expiration: Duration.days(cfg.logRetentionDays) }],
+      });
+      alb.logAccessLogs(albLogs, 'alb');
+    }
+
+    /* ------------------------------- AWS WAF ------------------------------- */
+    // Production always; staging only with -c staging:waf=true. Rate limits are per source IP per 5 min
+    // and complement the API's in-memory per-task throttling. Many employees behind one office NAT
+    // share an IP: keep the general limit generous.
+    if (isProd || props.wafRateLimit !== undefined) {
+      const visibility = (name: string): wafv2.CfnWebACL.VisibilityConfigProperty => ({ cloudWatchMetricsEnabled: true, sampledRequestsEnabled: true, metricName: `${prefix}-${name}` });
+      const managed = (priority: number, name: string, overrides: string[] = []): wafv2.CfnWebACL.RuleProperty => ({
+        name,
+        priority,
+        overrideAction: { none: {} },
+        statement: {
+          managedRuleGroupStatement: {
+            vendorName: 'AWS',
+            name,
+            ...(overrides.length ? { ruleActionOverrides: overrides.map((r) => ({ name: r, actionToUse: { count: {} } })) } : {}),
+          },
+        },
+        visibilityConfig: visibility(name),
+      });
+      const startsWith = (path: string): wafv2.CfnWebACL.StatementProperty => ({
+        byteMatchStatement: { fieldToMatch: { uriPath: {} }, positionalConstraint: 'STARTS_WITH', searchString: path, textTransformations: [{ priority: 0, type: 'NONE' }] },
+      });
+      const rules: wafv2.CfnWebACL.RuleProperty[] = [];
+      const cidrs = (props.allowedCidrs ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+      if (cidrs.length) {
+        const ipSet = new wafv2.CfnIPSet(this, 'AllowedIps', { scope: 'REGIONAL', ipAddressVersion: 'IPV4', addresses: cidrs, description: `${prefix} acceptance IP allow-list` });
+        rules.push({
+          name: 'block-outside-allowlist',
+          priority: 0,
+          action: { block: {} },
+          statement: { notStatement: { statement: { ipSetReferenceStatement: { arn: ipSet.attrArn } } } },
+          visibilityConfig: visibility('ip-allowlist'),
+        });
+      }
+      rules.push(
+        managed(1, 'AWSManagedRulesAmazonIpReputationList'),
+        managed(2, 'AWSManagedRulesKnownBadInputsRuleSet'),
+        // Uploads go straight to S3, but JSON bodies (comments, reports) can be legitimately large or
+        // contain markup-like text; those two rules only COUNT (the app escapes all output).
+        managed(3, 'AWSManagedRulesCommonRuleSet', ['SizeRestrictions_BODY', 'CrossSiteScripting_BODY']),
+        {
+          name: 'rate-limit-sign-in',
+          priority: 10,
+          action: { block: {} },
+          statement: {
+            rateBasedStatement: {
+              limit: props.wafAuthRateLimit ?? 200,
+              evaluationWindowSec: 300,
+              aggregateKeyType: 'IP',
+              scopeDownStatement: { orStatement: { statements: [startsWith('/api/v1/auth/'), startsWith('/session/')] } },
+            },
+          },
+          visibilityConfig: visibility('rate-sign-in'),
+        },
+        {
+          name: 'rate-limit-all',
+          priority: 11,
+          action: { block: {} },
+          statement: { rateBasedStatement: { limit: props.wafRateLimit ?? 6000, evaluationWindowSec: 300, aggregateKeyType: 'IP' } },
+          visibilityConfig: visibility('rate-all'),
+        },
+      );
+      const acl = new wafv2.CfnWebACL(this, 'WebAcl', {
+        name: prefix,
+        scope: 'REGIONAL',
+        defaultAction: { allow: {} },
+        rules,
+        visibilityConfig: visibility('acl'),
+      });
+      new wafv2.CfnWebACLAssociation(this, 'WebAclAssociation', { resourceArn: alb.loadBalancerArn, webAclArn: acl.attrArn });
+      // WAF logs: bearer tokens and session cookies are redacted (never stored in logs).
+      const wafLogs = new logs.LogGroup(this, 'WafLogs', {
+        logGroupName: `aws-waf-logs-${prefix}`,
+        retention: cfg.logRetentionDays as logs.RetentionDays,
+        removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+      });
+      new wafv2.CfnLoggingConfiguration(this, 'WafLogging', {
+        resourceArn: acl.attrArn,
+        logDestinationConfigs: [`arn:${this.partition}:logs:${this.region}:${this.account}:log-group:${wafLogs.logGroupName}`],
+        redactedFields: [{ singleHeader: { Name: 'authorization' } }, { singleHeader: { Name: 'cookie' } }],
+      }).node.addDependency(wafLogs);
+      alarm(
+        new cloudwatch.Alarm(this, 'WafSignInBlocksAlarm', {
+          metric: new cloudwatch.Metric({
+            namespace: 'AWS/WAFV2',
+            metricName: 'BlockedRequests',
+            dimensionsMap: { WebACL: prefix, Region: this.region, Rule: `${prefix}-rate-sign-in` },
+            statistic: 'Sum',
+            period: Duration.minutes(5),
+          }),
+          threshold: 50,
+          evaluationPeriods: 1,
+          treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+          alarmDescription: 'Sign-in rate limit is blocking requests (password guessing, or an office NAT needs a higher limit)',
+        }),
+      );
+    }
 
     /* ----------------------------- Scaling ----------------------------- */
     const scale = (svc: ecs.FargateService, size: ServiceSize, name: string) => {
@@ -581,5 +815,8 @@ export class AppStack extends Stack {
     new CfnOutput(this, 'MigrateSecurityGroup', { value: apiSg.securityGroupId });
     new CfnOutput(this, 'AttachmentsBucket', { value: bucket.bucketName });
     new CfnOutput(this, 'EventsDlqUrl', { value: dlq.queueUrl });
+    new CfnOutput(this, 'DatabaseInstanceId', { value: db.instanceIdentifier, description: 'For manual snapshots and restore drills' });
+    new CfnOutput(this, 'AccessMode', { value: accessMode });
+    if (replicaRegion) new CfnOutput(this, 'BackupReplicationRegion', { value: replicaRegion });
   }
 }

@@ -16,9 +16,12 @@
 import { randomBytes } from 'node:crypto';
 
 const BASE = `${(process.env.STAGING_URL ?? '').replace(/\/$/, '')}/api/v1`;
-const { ADMIN_EMAIL, ADMIN_PASSWORD, TEST_EMAIL_DOMAIN } = process.env;
+// Works against staging or production. In restricted acceptance mode set TEST_EMAIL to an address that
+// is in ACCESS_ALLOWLIST and does not exist yet (the run deactivates it; use a new address per run).
+const { ADMIN_EMAIL, ADMIN_PASSWORD, TEST_EMAIL } = process.env;
+const TEST_EMAIL_DOMAIN = process.env.TEST_EMAIL_DOMAIN ?? TEST_EMAIL?.split('@')[1];
 if (!process.env.STAGING_URL?.startsWith('https://') || !ADMIN_EMAIL || !ADMIN_PASSWORD || !TEST_EMAIL_DOMAIN) {
-  console.error('Set STAGING_URL (https), ADMIN_EMAIL, ADMIN_PASSWORD and TEST_EMAIL_DOMAIN.');
+  console.error('Set STAGING_URL (https URL of the environment), ADMIN_EMAIL, ADMIN_PASSWORD and TEST_EMAIL_DOMAIN (or TEST_EMAIL).');
   process.exit(2);
 }
 
@@ -52,7 +55,7 @@ const strongPassword = () => `Qa${randomBytes(9).toString('base64url')}9`;
 
 console.info(`Cognito staging test → ${new URL(BASE).host}`);
 let admin, user, temp, session, pw1, pw2, oldTokens;
-const email = `cognito-qa-${Date.now()}@${TEST_EMAIL_DOMAIN}`;
+const email = (TEST_EMAIL ?? `cognito-qa-${Date.now()}@${TEST_EMAIL_DOMAIN}`).toLowerCase();
 
 await step('C0', 'admin signs in (Cognito)', async () => {
   const r = await call('POST', '/auth/login', { email: ADMIN_EMAIL, password: ADMIN_PASSWORD });

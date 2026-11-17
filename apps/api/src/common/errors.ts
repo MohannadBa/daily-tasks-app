@@ -20,6 +20,7 @@ export const ErrorCode = {
   DEPARTMENT_INACTIVE: 'DEPARTMENT_INACTIVE',
   NOT_IMPLEMENTED: 'NOT_IMPLEMENTED',
   RATE_LIMITED: 'RATE_LIMITED',
+  ACCESS_RESTRICTED: 'ACCESS_RESTRICTED',
   INTERNAL: 'INTERNAL',
 } as const;
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

@@ -1,6 +1,8 @@
 import { App } from 'aws-cdk-lib';
 import { AppStack } from '../lib/app-stack';
 import { environments } from '../lib/config';
+import { DrStack } from '../lib/dr-stack';
+import { MailStack } from '../lib/mail-stack';
 import { RegistryStack } from '../lib/registry-stack';
 
 /**
@@ -14,6 +16,7 @@ import { RegistryStack } from '../lib/registry-stack';
  */
 const app = new App();
 const ctx = (key: string): string | undefined => app.node.tryGetContext(key) || undefined;
+const num = (key: string): number | undefined => (ctx(key) ? Number(ctx(key)) : undefined);
 
 const env = {
   account: ctx('account') ?? process.env.CDK_DEFAULT_ACCOUNT,
@@ -21,6 +24,23 @@ const env = {
 };
 
 new RegistryStack(app, 'DailyTasks-Registry', { env, description: 'DailyTasks container registries' });
+
+// Disaster recovery in the backup region (KMS key for replicated backups + isolated restore-drill
+// network). Deployed before DailyTasks-production; never deleted automatically.
+const backupRegion = environments.production.db.backupReplicationRegion!;
+new DrStack(app, 'DailyTasks-DR', {
+  env: { account: env.account, region: backupRegion },
+  description: `DailyTasks production disaster recovery (${backupRegion})`,
+  sourceRegion: env.region,
+  terminationProtection: true,
+});
+
+// SES sending identity for Cognito e-mail (deploy + verify before the application stack).
+const mailZoneId = ctx('mail:hostedZoneId') ?? ctx('hostedZoneId');
+const mailZoneName = ctx('mail:hostedZoneName') ?? ctx('hostedZoneName');
+if (mailZoneId && mailZoneName) {
+  new MailStack(app, 'DailyTasks-Mail', { env, description: 'DailyTasks SES identity for Cognito e-mail', hostedZoneId: mailZoneId, hostedZoneName: mailZoneName });
+}
 
 for (const config of Object.values(environments)) {
   new AppStack(app, `DailyTasks-${config.name}`, {
@@ -37,7 +57,15 @@ for (const config of Object.values(environments)) {
     vapidPublicKey: ctx(`${config.name}:vapidPublicKey`),
     vapidPrivateKeySecretArn: ctx(`${config.name}:vapidPrivateKeySecretArn`),
     personalDataKeyPreviousSecretArn: ctx(`${config.name}:personalDataKeyPreviousSecretArn`),
+    backupReplicaKmsKeyArn: ctx(`${config.name}:backupReplicaKmsKeyArn`),
     vapidSubject: ctx(`${config.name}:vapidSubject`),
+    accessMode: ctx(`${config.name}:accessMode`) as 'open' | 'restricted' | undefined,
+    accessAllowlist: ctx(`${config.name}:accessAllowlist`),
+    sesFromAddress: ctx(`${config.name}:sesFromAddress`),
+    sesFromName: ctx(`${config.name}:sesFromName`),
+    allowedCidrs: ctx(`${config.name}:allowedCidrs`),
+    wafRateLimit: num(`${config.name}:wafRateLimit`) ?? (config.name === 'staging' && ctx('staging:waf') === 'true' ? 6000 : undefined),
+    wafAuthRateLimit: num(`${config.name}:wafAuthRateLimit`),
     terminationProtection: config.name === 'production',
   });
 }

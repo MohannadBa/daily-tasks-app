@@ -60,6 +60,8 @@ Set by the CDK stack in AWS, by `docker-compose.yml` locally. **No real secret i
 | `DATABASE_URL` | ✓ | ✓ | | built at start from `DB_HOST/DB_PORT/DB_USERNAME/DB_PASSWORD/DB_NAME` | Secrets Manager (RDS-generated); `sslmode=require` |
 | `DB_SSLMODE`, `DB_CONNECTION_LIMIT` | ✓ | ✓ | | optional | defaults `require`, `10` |
 | `DB_SSL_CA_FILE` | ✓ | ✓ | | stack = `/app/certs/rds-global-bundle.pem` (baked into the images) | verifies the RDS server certificate + host name (Prisma `sslaccept=strict`); unset = encrypted but unverified TLS |
+| `ACCESS_MODE`, `ACCESS_ALLOWLIST` | ✓ | | | stack (`<env>:accessMode`, `<env>:accessAllowlist`); production defaults to `restricted` | launch gate: only allow-listed e-mails can sign in / be provisioned |
+| `DB_HOST_OVERRIDE` | ✓ | | | one-off task override only (restore drills) | points at a restored `*.rds.amazonaws.com` instance |
 | `PERSONAL_DATA_KEY_PREVIOUS` | ✓ | | | Secrets Manager, **only during a key rotation** (`<env>:personalDataKeyPreviousSecretArn`) | decrypt fallback; see OPERATIONS.md §8 |
 | `AWS_REGION` | ✓ | ✓ | | stack | |
 | `AWS_ENDPOINT_URL`, `S3_PUBLIC_ENDPOINT`, `S3_FORCE_PATH_STYLE` | ✓ | ✓ | | — | LocalStack only; unset in AWS |
@@ -91,7 +93,7 @@ Set by the CDK stack in AWS, by `docker-compose.yml` locally. **No real secret i
 
 The `VAPID_*` names are accepted as aliases (the `WEB_PUSH_*` name wins if both are set). Production refuses the development key pair shipped in `docker-compose.yml`.
 
-> The complete, approval-gated staging procedure is [STAGING_PLAN.md](STAGING_PLAN.md); backups, rollback, alarms, incident response and key rotation are in [OPERATIONS.md](OPERATIONS.md).
+> **Current plan: [PRODUCTION_PLAN.md](PRODUCTION_PLAN.md)** (production-first release in restricted acceptance mode, `scripts/deploy-production.sh`). The staging procedure is [STAGING_PLAN.md](STAGING_PLAN.md); backups, rollback, alarms, incident response and key rotation are in [OPERATIONS.md](OPERATIONS.md).
 
 ## First-time setup
 1. `npx cdk bootstrap aws://<account>/<region>` (once per account/region).
@@ -135,7 +137,7 @@ The `VAPID_*` names are accepted as aliases (the `WEB_PUSH_*` name wins if both 
 
 ## Estimated monthly cost (USD, approximate — updated for the enterprise release)
 
-Assumptions: on-demand list prices (us-east-1 reference; **me-central-1 (UAE) is typically ~10–20 % higher**, eu-north-1 is close to us-east-1), 730 h/month, ≤ 50 users, ~20 GB/month NAT traffic, 50 GB of files, ~5 GB/month logs, no free tier, no Savings Plans/Reserved Instances, taxes excluded. Fargate: $0.04048 per vCPU-h + $0.004445 per GB-h. **Verify with the AWS Pricing Calculator for the chosen region before approving.**
+Assumptions: on-demand list prices (us-east-1 reference; **eu-north-1 (Stockholm, the chosen region) is ~0–10 % higher**, me-central-1 ~10–20 % higher), 730 h/month, ≤ 50 users, ~20 GB/month NAT traffic, 50 GB of files, ~5 GB/month logs, no free tier, no Savings Plans/Reserved Instances, taxes excluded. Fargate: $0.04048 per vCPU-h + $0.004445 per GB-h. **Verify with the AWS Pricing Calculator for the chosen region before approving.**
 
 | Item | Staging | Production |
 |---|---:|---:|
@@ -154,8 +156,8 @@ Assumptions: on-demand list prices (us-east-1 reference; **me-central-1 (UAE) is
 | **E-mail** — Cognito default sender (staging) / SES for production (~$0.10 per 1 000 e-mails) | 0 | <1 |
 | Cognito (Lite tier, < 10 000 MAU), ACM certificate | 0 | 0 |
 | **Total (us-east-1 reference)** | **≈ $125 / month** | **≈ $335–360 / month** |
-| **Rough me-central-1 estimate** | **≈ $135–150** | **≈ $370–430** |
-| Optional: AWS WAF with a rate-based rule (recommended for production) | — | ~$10–15 |
+| **Rough eu-north-1 estimate (chosen region)** | **≈ $130–140** | **≈ $365–405** (incl. WAF) |
+| AWS WAF (production: web ACL + 5 rules + logs) | — | ~$12–15 (included in PRODUCTION_PLAN.md §10) |
 
 Biggest levers: 1-year Compute Savings Plan (≈ −20–30 % on Fargate), RDS Reserved Instance (≈ −30–40 %), Fargate Spot for staging, a single NAT gateway in production (−$33, less AZ resilience), stopping staging outside working hours (−~40 % of staging compute; RDS can be stopped up to 7 days). Set an **AWS Budget** alert (e.g. $150 staging, $450 production).
 

@@ -6,6 +6,7 @@ import type { AuthUser } from './auth.types';
 import { ALLOW_PASSWORD_CHANGE, IS_PUBLIC, ROLES } from './decorators';
 import { ErrorCode, forbidden } from '../common/errors';
 import { TokenService } from './token.service';
+import { AccessGate } from './access-gate';
 
 /**
  * Global guard: every endpoint requires a valid bearer token unless marked @Public().
@@ -17,6 +18,7 @@ export class AuthGuard implements CanActivate {
     private readonly reflector: Reflector,
     private readonly tokens: TokenService,
     private readonly prisma: PrismaService,
+    private readonly gate: AccessGate,
   ) {}
 
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
@@ -31,7 +33,7 @@ export class AuthGuard implements CanActivate {
     const user = await this.prisma.user.findUnique({
       where: verified.mode === 'local' ? { id: verified.subject } : { cognitoSub: verified.subject },
     });
-    if (!user || !user.isActive) throw new UnauthorizedException('Account not found or disabled');
+    if (!user || !user.isActive || !this.gate.allows(user.email)) throw new UnauthorizedException('Account not found or disabled');
 
     const principal: AuthUser = {
       id: user.id,

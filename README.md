@@ -68,7 +68,8 @@ pnpm cdk:synth       # synthesize AWS CloudFormation (no deployment)
 ```
 
 ## Documentation
-- [Staging plan](docs/STAGING_PLAN.md) — approval-gated HTTPS staging deployment (nothing deployed yet)
+- [Production plan](docs/PRODUCTION_PLAN.md) — production-first release in restricted acceptance mode (nothing deployed yet)
+- [Staging plan](docs/STAGING_PLAN.md) — superseded (staging skipped)
 - [Operations](docs/OPERATIONS.md) — backups, rollback, migrations, alarms, incident response, key rotation
 - [Cognito tests](docs/COGNITO_TESTS.md) — local/contract evidence vs. real staging verification (not run yet)
 - [Visual QA](docs/VISUAL_QA.md) — screens and PDFs reviewed, issues fixed

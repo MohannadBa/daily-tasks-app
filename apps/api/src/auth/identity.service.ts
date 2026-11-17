@@ -23,6 +23,7 @@ import type { AuthTokens } from '@dailytasks/shared-types';
 import { API_ENV } from '../config/config.module';
 import { PrismaService } from '../prisma/prisma.service';
 import { TokenService } from './token.service';
+import { AccessGate } from './access-gate';
 
 export type LoginResult =
   | { status: 'OK'; userId: string; tokens: AuthTokens }
@@ -45,6 +46,7 @@ export class IdentityService {
     @Inject(API_ENV) private readonly env: ApiEnv,
     private readonly prisma: PrismaService,
     private readonly tokens: TokenService,
+    private readonly gate: AccessGate,
   ) {
     if (env.AUTH_MODE === 'cognito') this.cognito = new CognitoIdentityProviderClient({ region: env.AWS_REGION });
   }
@@ -57,14 +59,15 @@ export class IdentityService {
     const user = await this.prisma.user.findUnique({ where: { email } });
     if (this.env.AUTH_MODE === 'local') {
       const ok = await bcrypt.compare(password, user?.passwordHash ?? this.dummyHash);
-      if (!user || !ok || !user.isActive) throw new UnauthorizedException('Invalid email or password');
+      if (!user || !ok || !user.isActive || !this.gate.allows(user.email)) throw new UnauthorizedException('Invalid email or password');
       // Temporary password: no tokens until a new password is chosen (same contract as Cognito).
       if (user.mustChangePassword) return { status: 'NEW_PASSWORD_REQUIRED', session: this.tokens.issuePasswordChallenge(user.id), email: user.email };
       await this.prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
       return { status: 'OK', userId: user.id, tokens: this.tokens.issueLocalTokens(user.id) };
     }
 
-    if (!user || !user.isActive) throw new UnauthorizedException('Invalid email or password');
+    // Inactive and (in acceptance mode) non-allow-listed accounts are refused before Cognito is called.
+    if (!user || !user.isActive || !this.gate.allows(user.email)) throw new UnauthorizedException('Invalid email or password');
     try {
       const res = await this.cognito!.send(
         new InitiateAuthCommand({
@@ -88,7 +91,7 @@ export class IdentityService {
     if (this.env.AUTH_MODE === 'local') {
       const userId = this.tokens.verifyPasswordChallenge(session);
       const user = await this.prisma.user.findUnique({ where: { id: userId } });
-      if (!user || !user.isActive || user.email !== email || !user.mustChangePassword) throw new UnauthorizedException('Invalid session');
+      if (!user || !user.isActive || !this.gate.allows(user.email) || user.email !== email || !user.mustChangePassword) throw new UnauthorizedException('Invalid session');
       await this.prisma.user.update({
         where: { id: user.id },
         data: { passwordHash: await bcrypt.hash(newPassword, 10), mustChangePassword: false, passwordChangedAt: new Date(), lastLoginAt: new Date() },
@@ -97,7 +100,7 @@ export class IdentityService {
       return { status: 'OK', userId: user.id, tokens: this.tokens.issueLocalTokens(user.id) };
     }
     const user = await this.prisma.user.findUnique({ where: { email } });
-    if (!user || !user.isActive) throw new UnauthorizedException('Invalid session');
+    if (!user || !user.isActive || !this.gate.allows(user.email)) throw new UnauthorizedException('Invalid session');
     try {
       const res = await this.cognito!.send(
         new RespondToAuthChallengeCommand({
@@ -121,7 +124,7 @@ export class IdentityService {
     if (this.env.AUTH_MODE === 'local') {
       const userId = this.tokens.verifyLocalRefreshToken(refreshToken);
       const user = await this.prisma.user.findUnique({ where: { id: userId } });
-      if (!user?.isActive) throw new UnauthorizedException('Account disabled');
+      if (!user?.isActive || !this.gate.allows(user.email)) throw new UnauthorizedException('Account disabled');
       return this.tokens.issueLocalTokens(user.id);
     }
     try {
@@ -133,6 +136,12 @@ export class IdentityService {
         }),
       );
       const r = res.AuthenticationResult!;
+      if (this.gate.restricted) {
+        // Acceptance mode: refresh only for allow-listed, active accounts (the guard re-checks on every call too).
+        const verified = await this.tokens.verifyAccessToken(r.AccessToken!);
+        const user = await this.prisma.user.findUnique({ where: { cognitoSub: verified.subject } });
+        if (!user?.isActive || !this.gate.allows(user.email)) throw new UnauthorizedException('Account disabled');
+      }
       // Cognito does not rotate refresh tokens unless rotation is enabled; keep the existing one.
       return { accessToken: r.AccessToken!, refreshToken: r.RefreshToken ?? refreshToken, expiresIn: r.ExpiresIn ?? 3600 };
     } catch {
@@ -148,7 +157,7 @@ export class IdentityService {
   async forgotPassword(email: string): Promise<void> {
     if (this.env.AUTH_MODE !== 'cognito') throw new NotImplementedException('Password reset by e-mail is not available on this server. Ask an administrator to reset your password.');
     const user = await this.prisma.user.findUnique({ where: { email } });
-    if (!user?.isActive) return;
+    if (!user?.isActive || !this.gate.allows(user.email)) return;
     try {
       await this.cognito!.send(new ForgotPasswordCommand({ ClientId: this.env.COGNITO_CLIENT_ID!, Username: email }));
     } catch (e) {

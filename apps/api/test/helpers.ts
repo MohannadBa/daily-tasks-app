@@ -1,5 +1,6 @@
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { apiEnvSchema, loadEnv } from '@dailytasks/config';
 import { ensureCompanyDefaults, PrismaClient, ProjectRole, UserRole } from '@dailytasks/database';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
@@ -32,11 +33,14 @@ export interface TestContext {
   tokens: TokenService;
 }
 
-export async function createTestApp(): Promise<TestContext> {
+/** `envOverrides` = extra environment variables for this app instance (e.g. ACCESS_MODE). */
+export async function createTestApp(envOverrides: Record<string, string> = {}): Promise<TestContext> {
   const storage = new FakeStorage();
   const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
     .overrideProvider(StorageService)
     .useValue(storage)
+    .overrideProvider(API_ENV)
+    .useValue(loadEnv(apiEnvSchema, { ...process.env, ...envOverrides }))
     .compile();
   const app = moduleRef.createNestApplication({ logger: false });
   configureApp(app, app.get(API_ENV));

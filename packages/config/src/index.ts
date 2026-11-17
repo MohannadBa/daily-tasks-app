@@ -140,6 +140,13 @@ export const apiEnvSchema = z
     PERSONAL_DATA_KEY: z.string().default(''),
     /** Previous key, set only during a key rotation (decrypt fallback; see docs/OPERATIONS.md). */
     PERSONAL_DATA_KEY_PREVIOUS: z.string().default(''),
+    /**
+     * Launch gate. `restricted` (acceptance testing): only the e-mail addresses in ACCESS_ALLOWLIST can
+     * sign in, refresh, call the API, open the live-update socket or be provisioned. `open`: normal operation.
+     */
+    ACCESS_MODE: z.enum(['open', 'restricted']).default('open'),
+    /** Comma-separated e-mail addresses (case-insensitive). Required when ACCESS_MODE=restricted. */
+    ACCESS_ALLOWLIST: z.string().default(''),
   })
   .superRefine((env, ctx) => {
     if (env.AUTH_MODE === 'local') {
@@ -161,6 +168,11 @@ export const apiEnvSchema = z
     }
     if (env.NODE_ENV !== 'production' && env.PERSONAL_DATA_KEY.length < 32) {
       ctx.addIssue({ code: 'custom', path: ['PERSONAL_DATA_KEY'], message: 'PERSONAL_DATA_KEY (>=32 chars) is required' });
+    }
+    if (env.ACCESS_MODE === 'restricted') {
+      const entries = env.ACCESS_ALLOWLIST.split(',').map((s) => s.trim()).filter(Boolean);
+      if (entries.length === 0) ctx.addIssue({ code: 'custom', path: ['ACCESS_ALLOWLIST'], message: 'ACCESS_ALLOWLIST must list at least one e-mail address when ACCESS_MODE=restricted' });
+      else if (entries.some((e) => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e))) ctx.addIssue({ code: 'custom', path: ['ACCESS_ALLOWLIST'], message: 'ACCESS_ALLOWLIST contains an entry that is not an e-mail address' });
     }
     if (env.AUTH_MODE === 'cognito' && (!env.COGNITO_USER_POOL_ID || !env.COGNITO_CLIENT_ID)) {
       ctx.addIssue({ code: 'custom', path: ['COGNITO_USER_POOL_ID'], message: 'Cognito settings are required when AUTH_MODE=cognito' });
@@ -223,11 +235,16 @@ export function ensureDatabaseUrl(env: Record<string, string | undefined> = proc
   if (env.DATABASE_URL || !env.DB_HOST) return;
   const user = encodeURIComponent(env.DB_USERNAME ?? '');
   const pass = encodeURIComponent(env.DB_PASSWORD ?? '');
+  // Restore drills only: point a one-off task at a restored RDS instance (same credentials) without
+  // touching the secret. Restricted to RDS endpoints; the certificate is still verified.
+  const override = env.DB_HOST_OVERRIDE?.trim();
+  if (override && !/^[a-z0-9.-]+\.rds\.amazonaws\.com$/i.test(override)) throw new Error('DB_HOST_OVERRIDE must be an RDS endpoint (*.rds.amazonaws.com)');
+  const host = override || env.DB_HOST;
   const ssl = env.DB_SSLMODE ?? 'require';
   // With DB_SSL_CA_FILE (the RDS CA bundle shipped in the images) the server certificate and host
   // name are verified (Prisma sslaccept=strict). Without it, TLS is used but not verified.
   const verify = env.DB_SSL_CA_FILE ? `&sslcert=${encodeURIComponent(env.DB_SSL_CA_FILE)}&sslaccept=strict` : '';
-  env.DATABASE_URL = `postgresql://${user}:${pass}@${env.DB_HOST}:${env.DB_PORT ?? '5432'}/${env.DB_NAME ?? 'dailytasks'}?schema=public&sslmode=${ssl}${verify}&connection_limit=${env.DB_CONNECTION_LIMIT ?? '10'}`;
+  env.DATABASE_URL = `postgresql://${user}:${pass}@${host}:${env.DB_PORT ?? '5432'}/${env.DB_NAME ?? 'dailytasks'}?schema=public&sslmode=${ssl}${verify}&connection_limit=${env.DB_CONNECTION_LIMIT ?? '10'}`;
 }
 
 /** Parse env and fail fast with a readable error that never prints secret values. */

@@ -20,7 +20,7 @@ Automated tests cannot prove that an operating system shows a notification on a 
 | 410 expiry, retries, duplicates, multi-device | worker + smoke tests | Partly (real uninstall → 410) |
 
 ## Prerequisites
-* Staging deployed with **HTTPS on the public domain** and real VAPID keys ([STAGING_PLAN.md](STAGING_PLAN.md)). Plain HTTP, the ALB DNS name or a LAN IP will not work (no service worker, no push, no install on iOS).
+* Production deployed in **restricted acceptance mode** with HTTPS on the public domain and real VAPID keys ([PRODUCTION_PLAN.md](PRODUCTION_PLAN.md)); both test accounts (E and M) must be in `ACCESS_ALLOWLIST`. If `ALLOWED_CIDRS` is set, phones on mobile data are blocked — leave it empty for these tests. Plain HTTP, the ALB DNS name or a LAN IP will not work (no service worker, no push, no install on iOS).
 * `curl https://<domain>/api/v1/push/vapid-public-key` → `{"enabled":true,…}`.
 * Accounts: **E** = employee (the phone under test), **M** = project manager (on a computer). E belongs to a project + department where M can assign tasks.
 * Phones: iPhone with **iOS ≥ 16.4** (Web Push for Home Screen apps), Android with current Chrome. Do Not Disturb / Focus **off** unless a step says otherwise. Record device model and OS/browser versions.

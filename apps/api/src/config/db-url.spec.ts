@@ -15,6 +15,14 @@ describe('ensureDatabaseUrl (ECS: built from the injected RDS secret fields)', (
     expect(env.DATABASE_URL).toContain('sslmode=require&sslcert=%2Fapp%2Fcerts%2Frds-global-bundle.pem&sslaccept=strict');
   });
 
+  it('restore drills: DB_HOST_OVERRIDE points at a restored RDS instance (RDS endpoints only, TLS still verified)', () => {
+    const env: Record<string, string | undefined> = { ...base, DB_SSL_CA_FILE: '/x.pem', DB_HOST_OVERRIDE: 'restore-1.abc.eu-north-1.rds.amazonaws.com' };
+    ensureDatabaseUrl(env);
+    expect(env.DATABASE_URL).toContain('@restore-1.abc.eu-north-1.rds.amazonaws.com:5432/');
+    expect(env.DATABASE_URL).toContain('sslaccept=strict');
+    expect(() => ensureDatabaseUrl({ ...base, DB_HOST_OVERRIDE: 'evil.example.com' })).toThrow('RDS endpoint');
+  });
+
   it('never overrides an explicit DATABASE_URL', () => {
     const env: Record<string, string | undefined> = { ...base, DATABASE_URL: 'postgresql://x' };
     ensureDatabaseUrl(env);

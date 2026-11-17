@@ -1,6 +1,6 @@
 # Cognito verification plan & record
 
-**Status: NOT VERIFIED against real Cognito.** No staging user pool exists yet (nothing has been deployed).
+**Status: NOT VERIFIED against real Cognito.** Nothing has been deployed. Staging was skipped: these tests now run on **production in restricted acceptance mode** ([PRODUCTION_PLAN.md](PRODUCTION_PLAN.md) §7.1), where Cognito sends e-mail through **SES** from the company domain.
 Everything below marked "local" or "contract" was run without Cognito. Real verification requires the
 staging deployment ([STAGING_PLAN.md](STAGING_PLAN.md)) and is recorded in the table at the end.
 
@@ -39,7 +39,10 @@ TEST_EMAIL_DOMAIN=<a domain you control> node scripts/cognito-staging-test.mjs
 | C8 | Deactivation → access token refused at once, refresh revoked, login refused |
 | C9 | Forgot-password response identical for unknown and known accounts |
 
-## Manual staging steps (need a real mailbox)
+### Restricted acceptance mode
+The test account must be allow-listed: run with `TEST_EMAIL=<allow-listed, not yet existing address>` (e.g. `qa-cognito-1@<domain>`); each run deactivates it, so use a new allow-listed address per run. Extra checks: **R1** admin creating a non-allow-listed account → 403 "restricted acceptance mode"; **R2** a non-allow-listed address cannot sign in (same generic error as a wrong password). Covered locally by `apps/api/test/access-mode.e2e-spec.ts` and a Cognito contract test (refused before Cognito is called).
+
+## Manual steps (need a real mailbox)
 | ID | Step | Expected |
 |---|---|---|
 | M1 | Administration → New account, leave temporary password empty (EMAIL delivery) for a mailbox you can read | Bilingual invitation e-mail arrives (subject "حسابك في الراسيات · Your Al-Rasiyat account") with user name + temporary password; check spam folder; note sender address |
@@ -49,9 +52,9 @@ TEST_EMAIL_DOMAIN=<a domain you control> node scripts/cognito-staging-test.mjs
 | M5 | "Forgot password?" → enter e-mail → enter code + new password | Password set; sign-in works; **no second forced change** (fix verified) |
 | M6 | Expired temporary password (temp validity 7 days — test by asking Cognito support or skip) | Login refused; admin must reset |
 | M7 | Deactivate the account while it is signed in on a phone | Next action on the phone → signed out |
-| M8 | Note Cognito default e-mail limits (≈50 e-mails/day, sender `no-reply@verificationemail.com`) | Acceptable for staging; **production needs SES** (see STAGING_PLAN.md) |
+| M8 | Check sender + authentication of the invitation (mail client "show original") | From `SES_FROM_ADDRESS`; DKIM=pass, SPF=pass for `ses-bounce.<domain>`; not in spam. While SES is in the sandbox only verified identities receive mail |
 
 ## Record (fill in on staging — do not pre-fill)
 | Date | Environment | Tester | C0–C9 result | M1–M8 result | Notes |
 |---|---|---|---|---|---|
-| | staging | | NOT RUN | NOT RUN | |
+| | production (restricted) | | NOT RUN | NOT RUN | R1–R2: NOT RUN |

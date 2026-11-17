@@ -2,6 +2,25 @@
 
 Date: 2026-11-16. Scope: API, worker, web/PWA, service worker, Web Push, Docker, AWS CDK. Method: code review plus automated tests (see "Evidence"). This is an internal engineering review, not a third-party penetration test.
 
+## Production-first review (2026-11-17, staging skipped)
+
+Scope: changes needed to make the first production deployment the acceptance environment. Verified offline (CDK synth/tests with credentials blanked, API/worker suites, local TLS proof); nothing deployed.
+
+| # | Change | Why | Evidence |
+|---|---|---|---|
+| P1 | **Restricted acceptance mode** (`ACCESS_MODE=restricted`, production default): only allow-listed e-mails can sign in, refresh, use the API/socket or be provisioned; others get the generic 401 | First production deploy must not be usable by ordinary employees | `access-mode.e2e-spec.ts` (5), Cognito contract test, CDK tests |
+| P2 | **SES** for Cognito e-mail (separate `DailyTasks-Mail` stack, DKIM, custom MAIL FROM); required by the CDK in production | Default sender limits / deliverability; DKIM-signed company sender | CDK tests |
+| P3 | **AWS WAF**: IP reputation, known bad inputs, core rule set, sign-in rate limit 200/5 min/IP, global 6000/5 min/IP, optional IP allow-list; logs redact `Authorization`/`Cookie` | Shared rate limiting across API tasks; edge filtering | CDK tests |
+| P4 | Production **retention**: log groups, user pool (deletion protection), buckets, DB credentials secret retained; DB snapshot on delete; termination protection | Production-first means no environment can be thrown away | CDK tests, synth |
+| P5 | ALB access logs (private, SSE-S3, 90 d); 5 new alarms (unhealthy targets, DB memory/connections, WAF sign-in blocks) | Incident evidence and detection | CDK tests |
+| P6 | **DB TLS proven**: in the real API image, the RDS CA bundle refuses a non-RDS certificate and a wrong host name; scripted positive + negative check for production (`db-tls-check`) | Previous review could only assert the configuration | PRODUCTION_PLAN.md §7.2 |
+| P7 | **Restore verification**: read-only `verify-restore` (migrations, counts, every personal task decrypts) + scripted drill; `DB_HOST_OVERRIDE` limited to RDS endpoints; drill target guarded in the script and in the verifier (R3) so a drill can never read production | Backups are only proven by restoring them, together with the key | `verify-restore.test.ts`, `db-url.spec.ts` |
+| P8 | Corrected secret names in the docs/scripts (`dailytasks-<env>/…`) | The key-escrow command in earlier docs would have failed | grep of docs/scripts |
+| P10 | Cross-region backups: RDS automated backups replicated to eu-west-1 (14 days) under a customer-managed key that is retained, rotated, usable by RDS only via the service, and cannot be disabled or scheduled for deletion without a deliberate key-policy change; automated backups kept after instance deletion; manual snapshots copied to Ireland; isolated (no ingress/egress, no internet) restore-drill network | Regional resilience and backup durability (R5) | CDK tests (5), offline synth, script dry runs incl. failure paths |
+| P9 | Deploy script safety: region pin (eu-north-1, checked in `.env` and in the CLI's resolved region; CDK refuses other regions), account check, typed stack name for every change, `OPEN ACCESS` phrase to open, automatic pre-migration snapshot, no destroy command | Human error during a production-first rollout | dry runs with a stubbed AWS CLI |
+
+Residual risks: per-IP API sign-in limits (10/min per task) may throttle a morning rush behind one office IP — monitor at opening; WAF CRS rules `SizeRestrictions_BODY`/`CrossSiteScripting_BODY` are COUNT-only; SES sandbox until production access; Cognito threat protection (Plus tier) not enabled; real Cognito, devices, RDS TLS and restore still to be executed (PRODUCTION_PLAN.md §8).
+
 ## Final staging-readiness security review (2026-11-17)
 
 Method: code review of every area below, the synthesized staging template (`cdk synth --no-lookups`, no AWS calls), and the automated suites. Real Cognito, real AWS IAM evaluation and physical devices are **not** covered and are listed as open items.
