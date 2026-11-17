@@ -698,6 +698,9 @@ export class AppStack extends Stack {
       environment: {
         NODE_ENV: 'production',
         PORT: '3000',
+        // Fargate sets HOSTNAME to the task's own hostname, overriding the image's HOSTNAME=0.0.0.0; the
+        // Next.js standalone server would then listen only on the task IP and fail the 127.0.0.1 health check.
+        HOSTNAME: '0.0.0.0',
         // Server-side BFF calls the API over Cloud Map inside the VPC.
         API_INTERNAL_URL: `http://api.${prefix}.local:3000/api/v1`,
         COOKIE_SECURE: https ? 'true' : 'false',

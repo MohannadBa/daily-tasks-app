@@ -422,6 +422,8 @@ describe('no custom domain: CloudFront layout (restricted acceptance)', () => {
     expect(api.TRUST_PROXY_HOPS).toBe('2');
     expect(web.CLIENT_IP_PROXY_HOPS).toBe('2');
     expect(web.COOKIE_SECURE).toBe('true');
+    // Fargate overrides the image's HOSTNAME; Next.js must still listen on all interfaces (health check on 127.0.0.1).
+    expect(web.HOSTNAME).toBe('0.0.0.0');
     expect(api.ACCESS_MODE).toBe('restricted');
     const buckets = Object.values(t.findResources('AWS::S3::Bucket')).map((b) => (b as { Properties: Record<string, unknown> }).Properties);
     expect(JSON.stringify(buckets.find((b) => b.CorsConfiguration)!.CorsConfiguration)).toContain('DomainName');
