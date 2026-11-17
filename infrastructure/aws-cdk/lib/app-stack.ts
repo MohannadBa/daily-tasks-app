@@ -93,6 +93,14 @@ export interface AppStackProps extends StackProps {
   wafAuthRateLimit?: number;
 }
 
+/**
+ * Database TLS trust anchor. Prisma only uses the FIRST certificate of DB_SSL_CA_FILE (verified: a bundle
+ * with the right CA in second place is refused), so the 114-certificate global RDS bundle cannot be used.
+ * The images ship a single-certificate file with the eu-north-1 root of rds-ca-rsa2048-g1, and the
+ * instance is pinned to that CA so server certificate and trust anchor always match.
+ */
+const DB_CA_FILE = '/app/certs/rds-eu-north-1-root-rsa2048-g1.pem';
+
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 /**
@@ -158,6 +166,8 @@ export class AppStack extends Stack {
       autoMinorVersionUpgrade: true,
       // Production: automated backups survive deletion of the instance (they expire only by retention).
       deleteAutomatedBackups: !isProd,
+      // Must match DB_CA_FILE (single eu-north-1 root of this CA; Prisma trusts only one certificate).
+      caCertificate: rds.CaCertificate.RDS_CA_RSA2048_G1,
       deletionProtection: cfg.db.deletionProtection,
       removalPolicy: isProd ? RemovalPolicy.SNAPSHOT : RemovalPolicy.DESTROY,
       enablePerformanceInsights: isProd,
@@ -493,7 +503,7 @@ export class AppStack extends Stack {
     const sharedEnv = {
       NODE_ENV: 'production',
       // Verify the RDS server certificate (CA bundle baked into the api/worker images).
-      DB_SSL_CA_FILE: '/app/certs/rds-global-bundle.pem',
+      DB_SSL_CA_FILE: DB_CA_FILE,
       LOG_LEVEL: 'info',
       AWS_REGION: this.region,
       S3_BUCKET: bucket.bucketName,
@@ -589,7 +599,7 @@ export class AppStack extends Stack {
       image: image('api'),
       command: ['migrate'],
       logging: ecs.LogDrivers.awsLogs({ streamPrefix: 'migrate', logGroup: logGroup('migrate') }),
-      environment: { NODE_ENV: 'production', SEED_DEMO_DATA: 'false', DB_SSL_CA_FILE: '/app/certs/rds-global-bundle.pem' },
+      environment: { NODE_ENV: 'production', SEED_DEMO_DATA: 'false', DB_SSL_CA_FILE: DB_CA_FILE },
       secrets: dbSecrets,
     });
 

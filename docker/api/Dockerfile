@@ -45,6 +45,9 @@ COPY --from=build --chown=node:node /app/packages/validation/dist packages/valid
 COPY --from=build --chown=node:node /app/apps/api/dist apps/api/dist
 # Public Amazon RDS CA bundle: lets DB_SSL_CA_FILE verify the database certificate.
 COPY --chown=node:node docker/certs/rds-global-bundle.pem /app/certs/rds-global-bundle.pem
+# Prisma trusts ONLY the first certificate of DB_SSL_CA_FILE, so production uses a single-certificate
+# file: the eu-north-1 root of the CA pinned on the RDS instance (rds-ca-rsa2048-g1).
+COPY --chown=node:node docker/certs/rds-eu-north-1-root-rsa2048-g1.pem /app/certs/rds-eu-north-1-root-rsa2048-g1.pem
 COPY --chown=node:node docker/api/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 USER node

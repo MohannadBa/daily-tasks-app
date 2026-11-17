@@ -60,7 +60,7 @@ Set by the CDK stack in AWS, by `docker-compose.yml` locally. **No real secret i
 | `LOG_LEVEL` | ✓ | ✓ | | stack | `info` |
 | `DATABASE_URL` | ✓ | ✓ | | built at start from `DB_HOST/DB_PORT/DB_USERNAME/DB_PASSWORD/DB_NAME` | Secrets Manager (RDS-generated); `sslmode=require` |
 | `DB_SSLMODE`, `DB_CONNECTION_LIMIT` | ✓ | ✓ | | optional | defaults `require`, `10` |
-| `DB_SSL_CA_FILE` | ✓ | ✓ | | stack = `/app/certs/rds-global-bundle.pem` (baked into the images) | verifies the RDS server certificate + host name (Prisma `sslaccept=strict`); unset = encrypted but unverified TLS |
+| `DB_SSL_CA_FILE` | ✓ | ✓ | | stack = `/app/certs/rds-eu-north-1-root-rsa2048-g1.pem` (single certificate, baked into the images; Prisma trusts only the first certificate of the file — the instance is pinned to `rds-ca-rsa2048-g1`) | verifies the RDS server certificate + host name (Prisma `sslaccept=strict`); unset = encrypted but unverified TLS |
 | `TRUST_PROXY_HOPS` (api), `CLIENT_IP_PROXY_HOPS` (web) | ✓ | | ✓ | stack: 2 behind CloudFront (no custom domain), 1 with ALB + custom domain | how many proxies to skip in `X-Forwarded-For` to find the real client IP (per-IP rate limits) |
 | `ACCESS_MODE`, `ACCESS_ALLOWLIST` | ✓ | | | stack (`<env>:accessMode`, `<env>:accessAllowlist`); production defaults to `restricted` | launch gate: only allow-listed e-mails can sign in / be provisioned |
 | `DB_HOST_OVERRIDE` | ✓ | | | one-off task override only (restore drills) | points at a restored `*.rds.amazonaws.com` instance |

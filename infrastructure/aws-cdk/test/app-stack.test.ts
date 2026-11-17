@@ -182,7 +182,7 @@ describe('AppStack', () => {
       (r) => (r as { Properties: { ContainerDefinitions: Array<{ Name: string; Environment?: Array<{ Name: string; Value: unknown }> }> } }).Properties.ContainerDefinitions,
     );
     for (const name of ['api', 'worker', 'migrate']) {
-      expect(defs.find((c) => c.Name === name)?.Environment?.find((e) => e.Name === 'DB_SSL_CA_FILE')?.Value).toBe('/app/certs/rds-global-bundle.pem');
+      expect(defs.find((c) => c.Name === name)?.Environment?.find((e) => e.Name === 'DB_SSL_CA_FILE')?.Value).toBe('/app/certs/rds-eu-north-1-root-rsa2048-g1.pem');
     }
   });
 
@@ -557,5 +557,23 @@ describe('CloudFront security (R11 TLS, R12 HTTPS only, R13 private origin)', ()
     expect(ingressToAlb[0]).toMatchObject({ FromPort: 80, ToPort: 80, IpProtocol: 'tcp' });
     expect(ingressToAlb[0]!.SourcePrefixListId).toBeDefined();
     expect(ingressToAlb[0]!.CidrIp).toBeUndefined();
+  });
+});
+
+describe('database TLS trust anchor (Prisma uses only the first certificate)', () => {
+  it('the CA file shipped in the images holds exactly ONE certificate: the eu-north-1 root of rds-ca-rsa2048-g1', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { X509Certificate } = await import('node:crypto');
+    const { resolve } = await import('node:path');
+    const pem = readFileSync(resolve(process.cwd(), '../../docker/certs/rds-eu-north-1-root-rsa2048-g1.pem'), 'utf8');
+    expect(pem.match(/BEGIN CERTIFICATE/g)).toHaveLength(1);
+    const cert = new X509Certificate(pem);
+    expect(cert.subject).toContain('CN=Amazon RDS eu-north-1 Root CA RSA2048 G1');
+    expect(cert.ca).toBe(true);
+    expect(new Date(cert.validTo).getFullYear()).toBeGreaterThan(2050);
+  });
+  it('the RDS instance is pinned to the matching CA (rds-ca-rsa2048-g1)', () => {
+    const t = Template.fromStack(new AppStack(new App(), 'Test-db-ca', { env: { account: '111111111111', region: 'eu-north-1' }, config: environments.production, imageTag: 'test', ...PROD }));
+    t.hasResourceProperties('AWS::RDS::DBInstance', { CACertificateIdentifier: 'rds-ca-rsa2048-g1' });
   });
 });
