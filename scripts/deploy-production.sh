@@ -98,7 +98,9 @@ need_aws() {
   command -v aws >/dev/null || die "AWS CLI not found"
   # Region the AWS CLI will actually use (local check, no network call): must be the production region.
   local cli_region
-  cli_region=$(aws configure list 2>/dev/null | awk '$1=="region"{print $2}')
+  # Works with both output formats: "region  eu-north-1  env …" (older CLI v2) and
+  # "region : eu-north-1 : env : …" (newer CLI v2, e.g. CloudShell) — first non-":" field after "region".
+  cli_region=$(aws configure list 2>/dev/null | awk '$1=="region"{for(i=2;i<=NF;i++) if($i!=":"){print $i; exit}}')
   [ "$cli_region" = "$PRODUCTION_REGION" ] || die "the AWS CLI resolves region '${cli_region:-<none>}', expected $PRODUCTION_REGION — refusing"
   local acct
   acct=$(aws sts get-caller-identity --query Account --output text 2>/dev/null) || die "no valid AWS credentials"
