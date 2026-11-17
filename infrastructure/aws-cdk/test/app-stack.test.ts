@@ -230,7 +230,8 @@ describe('production-first launch', () => {
     expect(Annotations.fromStack(noSes).findError('*', Match.stringLikeRegexp('requires SES')).length).toBe(0);
     expect(Annotations.fromStack(noSes).findWarning('*', Match.stringLikeRegexp('without SES')).length).toBe(1);
     const openNoSes = build({ sesFromAddress: undefined, accessMode: 'open', accessAllowlist: undefined, alarmEmail: 'ops@alrasiyat.sa' });
-    expect(Annotations.fromStack(openNoSes).findError('*', Match.stringLikeRegexp('Opening production requires SES')).length).toBe(1);
+    expect(Annotations.fromStack(openNoSes).findError('*', Match.anyValue())).toHaveLength(0);
+    expect(Annotations.fromStack(openNoSes).findWarning('*', Match.stringLikeRegexp('ACCEPTED RISK: open access without SES')).length).toBe(1);
     const wrongDomain = build({ sesFromAddress: 'no-reply@other.org' });
     expect(Annotations.fromStack(wrongDomain).findError('*', Match.stringLikeRegexp('hosted-zone domain')).length).toBe(1);
   });
@@ -447,7 +448,8 @@ describe('no custom domain: CloudFront layout (restricted acceptance)', () => {
     const ok = Template.fromStack(cf({ alarmEmail: 'ops@alrasiyat.sa' }));
     ok.hasResourceProperties('AWS::SNS::Subscription', { Protocol: 'email', Endpoint: 'ops@alrasiyat.sa' });
     const openNoMail = cf({ accessMode: 'open', accessAllowlist: undefined });
-    expect(Annotations.fromStack(openNoMail).findError('*', Match.stringLikeRegexp('valid operations mailbox')).length).toBe(1);
+    expect(Annotations.fromStack(openNoMail).findError('*', Match.anyValue())).toHaveLength(0);
+    expect(Annotations.fromStack(openNoMail).findWarning('*', Match.stringLikeRegexp('ACCEPTED RISK: open access without an operations mailbox')).length).toBe(1);
   });
 
   it('edge stack (us-east-1): CloudFront-scope WAF with the same rules, redacted logs, alarm without Region dimension', () => {
@@ -522,9 +524,15 @@ describe('CloudFront security (R11 TLS, R12 HTTPS only, R13 private origin)', ()
     expect(c.ViewerCertificate?.MinimumProtocolVersion).toBeUndefined();
   });
 
-  it('R11: OPEN ACCESS is refused on the CloudFront domain; allowed only on a custom domain with ACM + TLS 1.2+', () => {
+  it('R11 / option C: open access on the CloudFront domain synthesizes with an ACCEPTED-RISK warning (TLSv1); the custom domain keeps TLS 1.2+', () => {
     const open = { accessMode: 'open' as const, accessAllowlist: undefined, alarmEmail: 'ops@alrasiyat.sa' };
-    expect(Annotations.fromStack(cf(open)).findError('*', Match.stringLikeRegexp('verified custom domain with an ACM certificate')).length).toBe(1);
+    const onCf = cf(open);
+    expect(Annotations.fromStack(onCf).findError('*', Match.anyValue())).toHaveLength(0);
+    expect(Annotations.fromStack(onCf).findWarning('*', Match.stringLikeRegexp('ACCEPTED RISK: open access on the CloudFront address')).length).toBe(1);
+    expect(Annotations.fromStack(cf({ ...open, alarmEmail: undefined })).findError('*', Match.anyValue())).toHaveLength(0);
+    // A custom domain without a certificate is still refused (HTTPS rule).
+    const noCert = new AppStack(new App(), 'Test-open-nocert', { env: NORTH, config: environments.production, imageTag: 'test', ...base, ...open, domainName: 'tasks.example.com' });
+    expect(Annotations.fromStack(noCert).findError('*', Match.stringLikeRegexp('Production requires HTTPS')).length).toBe(1);
     const domain = new AppStack(new App(), 'Test-open-domain', { env: NORTH, config: environments.production, imageTag: 'test', ...PROD, ...open });
     expect(Annotations.fromStack(domain).findError('*', Match.anyValue())).toHaveLength(0);
     Template.fromStack(domain).hasResourceProperties('AWS::ElasticLoadBalancingV2::Listener', { Port: 443, SslPolicy: 'ELBSecurityPolicy-TLS13-1-2-2021-06' });

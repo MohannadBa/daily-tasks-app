@@ -81,12 +81,12 @@ case "$ACCESS_MODE" in
     if [ -n "${ADMIN_EMAIL:-}" ] && [[ ",${ACCESS_ALLOWLIST,,}," != *",${ADMIN_EMAIL,,},"* ]]; then die "ADMIN_EMAIL must be in ACCESS_ALLOWLIST"; fi
     ;;
   open)
-    # Opening is blocked until the launch prerequisites exist (also enforced by the CDK).
-    # R11: the CloudFront default domain only supports the TLSv1 policy — employees need a verified
-    # custom domain with an ACM certificate (ALB policy TLS 1.2+).
-    [ -n "$DOMAIN" ] || die "ACCESS_MODE=open requires a verified custom domain with an ACM certificate (TLS 1.2+); the CloudFront address is for restricted acceptance only"
-    [ -n "$ALARM_EMAIL" ] || die "ACCESS_MODE=open requires ALARM_EMAIL (operations mailbox for alarms)"
-    [ -n "$SES_FROM_ADDRESS" ] || die "ACCESS_MODE=open requires SES (SES_FROM_ADDRESS on a custom domain)"
+    # Owner decision 2026-11-17 (option C): open access is allowed without a custom domain, SES or an
+    # operations mailbox. These are ACCEPTED RISKS (docs/SECURITY_AUDIT.md) and are shown, not blocked.
+    OPEN_RISKS=()
+    [ -n "$DOMAIN" ] || OPEN_RISKS+=("no custom domain: CloudFront address with the TLSv1 security policy (TLS 1.0/1.1 not refused)")
+    [ -n "$SES_FROM_ADDRESS" ] || OPEN_RISKS+=("no SES: Cognito default sender, about 50 e-mails/day — create accounts with 'show temporary password once'")
+    [ -n "$ALARM_EMAIL" ] || OPEN_RISKS+=("no operations mailbox: alarms notify nobody")
     ;;
   *) die "ACCESS_MODE must be restricted or open" ;;
 esac
@@ -290,7 +290,8 @@ case "${1:-}" in
     done
     if [ "$ACCESS_MODE" = open ]; then
       echo; echo "!!! ACCESS_MODE=open: every provisioned account (all employees) will be able to sign in."
-      read -r -p "Type OPEN ACCESS to confirm the launch checklist is signed off: " ans
+      for r in "${OPEN_RISKS[@]}"; do echo "    ACCEPTED RISK: $r"; done
+      read -r -p "Type OPEN ACCESS to confirm: " ans
       [ "$ans" = "OPEN ACCESS" ] || die "cancelled"
     fi
     confirm "deploy $STACK with image $IMAGE_TAG, access mode $ACCESS_MODE (≈ \$365–405/month incl. WAF)"

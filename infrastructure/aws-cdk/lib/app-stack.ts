@@ -248,21 +248,22 @@ export class AppStack extends Stack {
     }
     if (allowlist.some((e) => !EMAIL_RE.test(e))) Annotations.of(this).addError('accessAllowlist contains an entry that is not an e-mail address');
     if (accessMode === 'restricted') Annotations.of(this).addWarning(`RESTRICTED ACCEPTANCE MODE: only ${allowlist.length} allow-listed account(s) can sign in.`);
-    // R11: the CloudFront default certificate (*.cloudfront.net) forces the TLSv1 security policy. Employees
-    // may only be admitted on a verified custom domain with an ACM certificate and a TLS 1.2+ ALB policy.
-    if (isProd && accessMode === 'open' && (cloudFront || !certificate)) {
-      Annotations.of(this).addError(
-        'Opening production requires a verified custom domain with an ACM certificate (ALB policy TLS 1.2+). The CloudFront default domain only supports the TLSv1 policy and is restricted to acceptance testing.',
+    // Owner decision 2026-11-17 (option C, ACCEPTED RISKS — docs/SECURITY_AUDIT.md): production may be opened
+    // on the CloudFront address without a custom domain, SES or an operations mailbox. Each gap is a loud
+    // warning instead of an error. (A custom domain without a certificate is still refused: HTTPS check above.)
+    if (isProd && accessMode === 'open' && cloudFront) {
+      Annotations.of(this).addWarning(
+        'ACCEPTED RISK: open access on the CloudFront address — its default certificate uses the TLSv1 security policy (TLS 1.0/1.1 not refused). Move to a custom domain with ACM + TLS 1.2+ (docs/PRODUCTION_PLAN.md §13).',
       );
     }
-    if (isProd && accessMode === 'open' && (!props.alarmEmail || alarmEmailError)) {
-      Annotations.of(this).addError('Opening production requires a valid operations mailbox for alarms (-c alarmEmail=...).');
+    if (isProd && accessMode === 'open' && !props.alarmEmail) {
+      Annotations.of(this).addWarning('ACCEPTED RISK: open access without an operations mailbox — alarms notify nobody (set ALARM_EMAIL).');
     }
 
     /* ------------------------- Cognito e-mail via SES ------------------------- */
     if (isProd && !props.sesFromAddress) {
       if (accessMode === 'open') {
-        Annotations.of(this).addError('Opening production requires SES for Cognito e-mail (needs a custom domain): deploy DailyTasks-Mail, wait until verified, then pass -c production:sesFromAddress=no-reply@<hostedZoneName>.');
+        Annotations.of(this).addWarning('ACCEPTED RISK: open access without SES — Cognito default sender, about 50 e-mails per day, may land in spam. Create accounts with "show temporary password once".');
       } else {
         Annotations.of(this).addWarning('Restricted acceptance without SES: Cognito sends from its default address (about 50 e-mails per day). SES is required before opening.');
       }

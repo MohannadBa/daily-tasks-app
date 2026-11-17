@@ -73,7 +73,7 @@ Demo logins (seed, local only): `manager1@dailytasks.local` / `employee1@dailyta
 - Tests: API integration tests in `apps/api/test/*.e2e-spec.ts` (real Postgres, fake S3); worker tests in `apps/worker/test`.
 
 ## Production launch gate & ops
-- `ACCESS_MODE=restricted` + `ACCESS_ALLOWLIST` (`apps/api/src/auth/access-gate.ts`): enforced in AuthGuard, IdentityService (login/challenge/refresh/forgot), RealtimeService and user provisioning. Production defaults to restricted; opening is an explicit redeploy. Never add an endpoint that bypasses the guard.
+- `ACCESS_MODE=restricted` + `ACCESS_ALLOWLIST` (`apps/api/src/auth/access-gate.ts`): enforced in AuthGuard, IdentityService (login/challenge/refresh/forgot), RealtimeService and user provisioning. Production defaults to restricted; opening is an explicit redeploy (`OPEN ACCESS`). Owner decision (2026-11-17): open is allowed on the CloudFront address without domain/SES/mailbox as ACCEPTED RISKS (warnings, see SECURITY_AUDIT P13) — do not silently turn these back into errors or drop the warnings. Never add an endpoint that bypasses the guard.
 - Cognito e-mail goes through SES (`DailyTasks-Mail` stack, deploy + verify first). WAF on the ALB in production; WAF logs must keep `authorization`/`cookie` redacted.
 - Backups: production replicates RDS automated backups to **eu-west-1** (14 days) with the KMS key from the `DailyTasks-DR` stack (`production:backupReplicaKmsKeyArn`); `DeleteAutomatedBackups=false`. Never add automatic deletion of backups, snapshots, the DR key or the DR stack.
 - Secret names: `dailytasks-<env>/db`, `dailytasks-<env>/personal-data-key`, `dailytasks-production/vapid-private-key`.
