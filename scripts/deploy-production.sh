@@ -3,10 +3,11 @@
 # Run the steps in this order the first time (docs/PRODUCTION_PLAN.md §5):
 #
 #   check          validate settings, credentials and readiness (changes nothing)
-#   bootstrap      cdk bootstrap (once per account) in the production region AND the backup region (eu-west-1)
+#   bootstrap      cdk bootstrap (once per account) in eu-north-1, eu-west-1 (backups) and us-east-1 (CloudFront WAF)
 #   registry       ECR repositories (DailyTasks-Registry)
 #   images         build + push api/worker/web (needs Docker; your PC is more reliable than CloudShell)
-#   mail           SES domain identity for Cognito e-mail (DailyTasks-Mail) — then wait for `check` to show it verified
+#   edge           DailyTasks-Edge in us-east-1: CloudFront WAF (needed while there is no custom domain)
+#   mail           SES domain identity for Cognito e-mail (DailyTasks-Mail; needs a custom domain) — then wait for `check`
 #   dr             DailyTasks-DR in eu-west-1: KMS key for replicated backups + isolated restore-drill network
 #   vapid          Web Push key pair (private key → Secrets Manager, public key → .env.production)
 #   diff           show what the deploy would change (changes nothing)
@@ -35,6 +36,9 @@ VAPID_SECRET_NAME="$PREFIX/vapid-private-key"
 PRODUCTION_REGION=eu-north-1
 DR_REGION=eu-west-1
 DR_STACK=DailyTasks-DR
+# CloudFront web ACLs must live in us-east-1.
+EDGE_REGION=us-east-1
+EDGE_STACK=DailyTasks-Edge
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 info() { echo "==> $*"; }
@@ -52,18 +56,38 @@ set -a
 . "$ENV_FILE" || die "could not read $ENV_FILE — quote values that contain spaces, e.g. ADMIN_NAME=\"Amal Ahmed\""
 set +a
 
-for v in AWS_ACCOUNT_ID AWS_REGION DOMAIN HOSTED_ZONE_NAME ALARM_EMAIL SES_FROM_ADDRESS ACCESS_MODE; do
+for v in AWS_ACCOUNT_ID AWS_REGION ACCESS_MODE; do
   [ -n "${!v:-}" ] || die "$v is empty in $ENV_FILE"
 done
 [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || die "AWS_ACCOUNT_ID must be 12 digits"
-[[ "$DOMAIN" == *".$HOSTED_ZONE_NAME" || "$DOMAIN" == "$HOSTED_ZONE_NAME" ]] || die "DOMAIN ($DOMAIN) is not inside HOSTED_ZONE_NAME ($HOSTED_ZONE_NAME)"
-[[ "${SES_FROM_ADDRESS,,}" == *"@${HOSTED_ZONE_NAME,,}" ]] || die "SES_FROM_ADDRESS must be an address @$HOSTED_ZONE_NAME"
+DOMAIN="${DOMAIN:-}"; HOSTED_ZONE_NAME="${HOSTED_ZONE_NAME:-}"; SES_FROM_ADDRESS="${SES_FROM_ADDRESS:-}"; ALARM_EMAIL="${ALARM_EMAIL:-}"
+# Custom domain is optional: without it the app is served at https://<id>.cloudfront.net (DailyTasks-Edge).
+if [ -n "$DOMAIN" ]; then
+  [ -n "$HOSTED_ZONE_NAME" ] || die "DOMAIN is set but HOSTED_ZONE_NAME is empty"
+  [[ "$DOMAIN" == *".$HOSTED_ZONE_NAME" || "$DOMAIN" == "$HOSTED_ZONE_NAME" ]] || die "DOMAIN ($DOMAIN) is not inside HOSTED_ZONE_NAME ($HOSTED_ZONE_NAME)"
+fi
+if [ -n "$SES_FROM_ADDRESS" ]; then
+  [ -n "$HOSTED_ZONE_NAME" ] || die "SES_FROM_ADDRESS needs a custom domain (HOSTED_ZONE_NAME)"
+  [[ "${SES_FROM_ADDRESS,,}" == *"@${HOSTED_ZONE_NAME,,}" ]] || die "SES_FROM_ADDRESS must be an address @$HOSTED_ZONE_NAME"
+fi
+# Operations mailbox: optional until opening; never a placeholder (same rule as the CDK).
+if [ -n "$ALARM_EMAIL" ]; then
+  [[ "$ALARM_EMAIL" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]] || die "ALARM_EMAIL is not a valid e-mail address"
+  [[ "${ALARM_EMAIL##*@}" =~ (^|\.)(example\.(com|org|net)|test|invalid|localhost|local)$ ]] && die "ALARM_EMAIL uses a placeholder domain — set a real operations mailbox or leave it empty"
+fi
 case "$ACCESS_MODE" in
   restricted)
     [ -n "${ACCESS_ALLOWLIST:-}" ] || die "ACCESS_MODE=restricted needs ACCESS_ALLOWLIST"
     if [ -n "${ADMIN_EMAIL:-}" ] && [[ ",${ACCESS_ALLOWLIST,,}," != *",${ADMIN_EMAIL,,},"* ]]; then die "ADMIN_EMAIL must be in ACCESS_ALLOWLIST"; fi
     ;;
-  open) ;;
+  open)
+    # Opening is blocked until the launch prerequisites exist (also enforced by the CDK).
+    # R11: the CloudFront default domain only supports the TLSv1 policy — employees need a verified
+    # custom domain with an ACM certificate (ALB policy TLS 1.2+).
+    [ -n "$DOMAIN" ] || die "ACCESS_MODE=open requires a verified custom domain with an ACM certificate (TLS 1.2+); the CloudFront address is for restricted acceptance only"
+    [ -n "$ALARM_EMAIL" ] || die "ACCESS_MODE=open requires ALARM_EMAIL (operations mailbox for alarms)"
+    [ -n "$SES_FROM_ADDRESS" ] || die "ACCESS_MODE=open requires SES (SES_FROM_ADDRESS on a custom domain)"
+    ;;
   *) die "ACCESS_MODE must be restricted or open" ;;
 esac
 [ "$AWS_REGION" = "$PRODUCTION_REGION" ] || die "AWS_REGION in $ENV_FILE is '$AWS_REGION' — production is fixed to $PRODUCTION_REGION (backups to $DR_REGION). Refusing."
@@ -81,6 +105,7 @@ need_aws() {
   [ "$acct" = "$AWS_ACCOUNT_ID" ] || die "credentials belong to account $acct, but $ENV_FILE says $AWS_ACCOUNT_ID — refusing"
 }
 zone_id() {
+  [ -n "$HOSTED_ZONE_NAME" ] || die "no custom domain configured (HOSTED_ZONE_NAME is empty)"
   if [ -n "${HOSTED_ZONE_ID:-}" ]; then echo "$HOSTED_ZONE_ID"; return; fi
   local id
   id=$(aws route53 list-hosted-zones-by-name --dns-name "$HOSTED_ZONE_NAME" --max-items 1 \
@@ -95,10 +120,16 @@ context() {
   arn=$(vapid_arn)
   [ -n "${VAPID_PUBLIC_KEY:-}" ] && [ -n "$arn" ] || die "Web Push keys missing — run: vapid"
   CTX=(-c "account=$AWS_ACCOUNT_ID" -c "region=$AWS_REGION" -c "imageTag=$IMAGE_TAG"
-    -c "production:domainName=$DOMAIN" -c "hostedZoneId=$(zone_id)" -c "hostedZoneName=$HOSTED_ZONE_NAME"
-    -c "production:vapidPublicKey=$VAPID_PUBLIC_KEY" -c "production:vapidPrivateKeySecretArn=$arn" -c "alarmEmail=$ALARM_EMAIL"
-    -c "production:sesFromAddress=$SES_FROM_ADDRESS" -c "production:accessMode=$ACCESS_MODE"
-    -c "production:backupReplicaKmsKeyArn=$(dr_key)")
+    -c "production:vapidPublicKey=$VAPID_PUBLIC_KEY" -c "production:vapidPrivateKeySecretArn=$arn"
+    -c "production:accessMode=$ACCESS_MODE" -c "production:backupReplicaKmsKeyArn=$(dr_key)")
+  if [ -n "$DOMAIN" ]; then
+    CTX+=(-c "production:domainName=$DOMAIN")
+  else
+    CTX+=(-c "production:edgeWebAclArn=$(edge_acl)")   # CloudFront domain until a custom domain exists
+  fi
+  [ -n "$HOSTED_ZONE_NAME" ] && CTX+=(-c "hostedZoneId=$(zone_id)" -c "hostedZoneName=$HOSTED_ZONE_NAME")
+  [ -n "$SES_FROM_ADDRESS" ] && CTX+=(-c "production:sesFromAddress=$SES_FROM_ADDRESS")
+  [ -n "$ALARM_EMAIL" ] && CTX+=(-c "alarmEmail=$ALARM_EMAIL")
   [ "$ACCESS_MODE" = "restricted" ] && CTX+=(-c "production:accessAllowlist=$ACCESS_ALLOWLIST")
   [ -n "${SES_FROM_NAME:-}" ] && CTX+=(-c "production:sesFromName=$SES_FROM_NAME")
   [ -n "${VAPID_SUBJECT:-}" ] && CTX+=(-c "production:vapidSubject=$VAPID_SUBJECT")
@@ -110,6 +141,13 @@ context() {
 cdk() { (cd "$CDK_DIR" && npx cdk "$@"); }
 out() { aws cloudformation describe-stacks --stack-name "$STACK" --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text; }
 db_id() { out DatabaseInstanceId; }
+edge_out() { aws cloudformation describe-stacks --region "$EDGE_REGION" --stack-name "$EDGE_STACK" --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text 2>/dev/null || true; }
+edge_acl() {
+  local a
+  a=$(edge_out WebAclArn)
+  [[ "$a" == arn:aws:wafv2:$EDGE_REGION:$AWS_ACCOUNT_ID:global/webacl/* ]] || die "$EDGE_STACK not deployed in $EDGE_REGION (run: edge)"
+  echo "$a"
+}
 dr_out() { aws cloudformation describe-stacks --region "$DR_REGION" --stack-name "$DR_STACK" --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text 2>/dev/null || true; }
 dr_key() {
   local k
@@ -160,7 +198,9 @@ case "${1:-}" in
     node -e 'const [a,b]=process.versions.node.split(".").map(Number);process.exit(a>22||(a===22&&b>=12)?0:1)' || die "Node $(node -v) is too old (need >= 22.12)"
     need_aws
     info "account $AWS_ACCOUNT_ID, region $AWS_REGION: credentials OK"
-    info "hosted zone $HOSTED_ZONE_NAME: $(zone_id); domain https://$DOMAIN; image $IMAGE_TAG; alarms → $ALARM_EMAIL"
+    if [ -n "$DOMAIN" ]; then info "custom domain https://$DOMAIN (hosted zone $HOSTED_ZONE_NAME: $(zone_id))"; else info "no custom domain: served at the CloudFront domain (needs $EDGE_STACK)"; fi
+    info "image $IMAGE_TAG"
+    [ -n "$ALARM_EMAIL" ] && info "alarm e-mail: $ALARM_EMAIL (confirm the SNS subscription e-mail after deploy)" || info "alarm e-mail: NOT CONFIGURED — alarms fire without notification (set ALARM_EMAIL; required before opening)"
     if [ "$ACCESS_MODE" = restricted ]; then info "launch gate: RESTRICTED ($(echo "$ACCESS_ALLOWLIST" | tr ',' '\n' | grep -c .) allow-listed account(s))"; else info "launch gate: OPEN (all provisioned accounts)"; fi
     aws cloudformation describe-stacks --stack-name CDKToolkit >/dev/null 2>&1 && info "CDK bootstrap: present" || info "CDK bootstrap: MISSING (run: bootstrap)"
     if aws ecr describe-repositories --repository-names dailytasks/api >/dev/null 2>&1; then
@@ -168,10 +208,15 @@ case "${1:-}" in
         aws ecr describe-images --repository-name "dailytasks/$s" --image-ids "imageTag=$IMAGE_TAG" >/dev/null 2>&1 && info "image $s:$IMAGE_TAG present" || info "image $s:$IMAGE_TAG MISSING (run: images)"
       done
     else info "registry: MISSING (run: registry)"; fi
-    if mail_verified; then info "SES identity $HOSTED_ZONE_NAME: VERIFIED"; else info "SES identity $HOSTED_ZONE_NAME: NOT VERIFIED (run: mail, then wait)"; fi
-    [ "$(aws sesv2 get-account --query ProductionAccessEnabled --output text 2>/dev/null)" = "True" ] \
-      && info "SES account: production access" \
-      || info "SES account: SANDBOX (only verified addresses/domains receive mail — request production access before opening to employees)"
+    if [ -z "$SES_FROM_ADDRESS" ]; then info "SES: not configured — Cognito default sender (≈50 e-mails/day) during restricted acceptance; required before opening"
+    elif mail_verified; then info "SES identity $HOSTED_ZONE_NAME: VERIFIED"; else info "SES identity $HOSTED_ZONE_NAME: NOT VERIFIED (run: mail, then wait)"; fi
+    if [ -z "$DOMAIN" ]; then
+      a=$(edge_out WebAclArn); [ -n "$a" ] && [ "$a" != None ] && info "$EDGE_STACK ($EDGE_REGION): deployed" || info "$EDGE_STACK ($EDGE_REGION): not deployed (run: edge)"
+    fi
+    if [ -n "$SES_FROM_ADDRESS" ]; then
+      if [ "$(aws sesv2 get-account --query ProductionAccessEnabled --output text 2>/dev/null)" = "True" ]; then info "SES account: production access"
+      else info "SES account: SANDBOX (only verified addresses/domains receive mail — request production access before opening to employees)"; fi
+    fi
     [ -n "$(vapid_arn)" ] && [ -n "${VAPID_PUBLIC_KEY:-}" ] && info "Web Push keys: present" || info "Web Push keys: MISSING (run: vapid)"
     aws cloudformation describe-stacks --region "$DR_REGION" --stack-name CDKToolkit >/dev/null 2>&1 && info "CDK bootstrap $DR_REGION: present" || info "CDK bootstrap $DR_REGION: MISSING (run: bootstrap)"
     k=$(dr_out BackupKeyArn); [ -n "$k" ] && [ "$k" != None ] && info "$DR_STACK ($DR_REGION): deployed, backup key present" || info "$DR_STACK ($DR_REGION): not deployed (run: dr)"
@@ -183,8 +228,8 @@ case "${1:-}" in
     else info "$STACK: not deployed"; fi
     ;;
   bootstrap)
-    need_aws; confirm "bootstrap CDK in aws://$AWS_ACCOUNT_ID/$AWS_REGION and aws://$AWS_ACCOUNT_ID/$DR_REGION"
-    cdk bootstrap "aws://$AWS_ACCOUNT_ID/$AWS_REGION" "aws://$AWS_ACCOUNT_ID/$DR_REGION"
+    need_aws; confirm "bootstrap CDK in aws://$AWS_ACCOUNT_ID/$AWS_REGION, /$DR_REGION and /$EDGE_REGION"
+    cdk bootstrap "aws://$AWS_ACCOUNT_ID/$AWS_REGION" "aws://$AWS_ACCOUNT_ID/$DR_REGION" "aws://$AWS_ACCOUNT_ID/$EDGE_REGION"
     ;;
   registry)
     need_aws; confirm "deploy DailyTasks-Registry (3 ECR repositories)"
@@ -195,7 +240,18 @@ case "${1:-}" in
     confirm "build and push api/worker/web images with tag $IMAGE_TAG"
     AWS_ACCOUNT_ID="$AWS_ACCOUNT_ID" AWS_REGION="$AWS_REGION" "$ROOT/scripts/push-images.sh" "$IMAGE_TAG"
     ;;
+  edge)
+    need_aws; confirm "deploy $EDGE_STACK in $EDGE_REGION: CloudFront WAF (managed rules, rate limits, logs; ≈ \$12–15/month)"
+    ECTX=(-c "account=$AWS_ACCOUNT_ID" -c "region=$AWS_REGION")
+    [ -n "$ALARM_EMAIL" ] && ECTX+=(-c "alarmEmail=$ALARM_EMAIL")
+    [ -n "${ALLOWED_CIDRS:-}" ] && ECTX+=(-c "production:allowedCidrs=$ALLOWED_CIDRS")
+    [ -n "${WAF_RATE_LIMIT:-}" ] && ECTX+=(-c "production:wafRateLimit=$WAF_RATE_LIMIT")
+    [ -n "${WAF_AUTH_RATE_LIMIT:-}" ] && ECTX+=(-c "production:wafAuthRateLimit=$WAF_AUTH_RATE_LIMIT")
+    cdk deploy "$EDGE_STACK" "${ECTX[@]}" --require-approval broadening
+    info "web ACL: $(edge_acl)"
+    ;;
   mail)
+    [ -n "$HOSTED_ZONE_NAME" ] || die "SES needs a custom domain: set HOSTED_ZONE_NAME (see docs/PRODUCTION_PLAN.md §13)"
     need_aws; confirm "deploy DailyTasks-Mail: SES identity for $HOSTED_ZONE_NAME (adds DKIM CNAMEs + ses-bounce MX/SPF records to the zone)"
     cdk deploy DailyTasks-Mail -c "account=$AWS_ACCOUNT_ID" -c "region=$AWS_REGION" -c "hostedZoneId=$(zone_id)" -c "hostedZoneName=$HOSTED_ZONE_NAME" --require-approval never
     info "DKIM verification usually takes minutes (up to 72 h). Re-run: scripts/deploy-production.sh check"
@@ -228,7 +284,7 @@ case "${1:-}" in
     ;;
   deploy)
     need_aws; context
-    mail_verified || die "SES identity $HOSTED_ZONE_NAME is not verified yet — run: mail, then wait (check)"
+    if [ -n "$SES_FROM_ADDRESS" ]; then mail_verified || die "SES identity $HOSTED_ZONE_NAME is not verified yet — run: mail, then wait (check)"; fi
     for s in api worker web; do
       aws ecr describe-images --repository-name "dailytasks/$s" --image-ids "imageTag=$IMAGE_TAG" >/dev/null 2>&1 || die "image dailytasks/$s:$IMAGE_TAG not in ECR — run: images"
     done
@@ -239,7 +295,7 @@ case "${1:-}" in
     fi
     confirm "deploy $STACK with image $IMAGE_TAG, access mode $ACCESS_MODE (≈ \$365–405/month incl. WAF)"
     cdk deploy "$STACK" "${CTX[@]}" --require-approval broadening
-    info "deployed. First time: migrate → tls-check → admin"
+    info "deployed at $(out AppUrl). First time: migrate → tls-check → admin"
     ;;
   snapshot)
     need_aws; confirm "create a manual snapshot of the production database"
@@ -270,7 +326,7 @@ case "${1:-}" in
     run_one_off bootstrap-admin MigrateTaskDefinition migrate "$overrides"
     aws cognito-idp admin-create-user --user-pool-id "$(out UserPoolId)" --username "$ADMIN_EMAIL" --desired-delivery-mediums EMAIL \
       --user-attributes Name=email,Value="$ADMIN_EMAIL" Name=email_verified,Value=true --query 'User.UserStatus' --output text
-    info "invitation e-mailed to $ADMIN_EMAIL — sign in at https://$DOMAIN"
+    info "invitation e-mailed to $ADMIN_EMAIL — sign in at $(out AppUrl)"
     info "NOW escrow the personal-data key (docs/OPERATIONS.md §8): secret $PREFIX/personal-data-key"
     ;;
   restore-drill)

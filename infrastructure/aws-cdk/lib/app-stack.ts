@@ -18,10 +18,14 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as subs from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
+import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import type { Construct } from 'constructs';
+import { validAlarmEmail } from './alarm-email';
 import type { EnvironmentConfig, ServiceSize } from './config';
 import { repositoryName, type RepositoryName } from './registry-stack';
+import { createWebAcl, signInBlocksAlarm } from './waf';
 
 export interface AppStackProps extends StackProps {
   config: EnvironmentConfig;
@@ -76,6 +80,12 @@ export interface AppStackProps extends StackProps {
    * Required when the environment replicates backups (production → eu-west-1).
    */
   backupReplicaKmsKeyArn?: string;
+  /**
+   * Production WITHOUT a custom domain is served through CloudFront (`https://<id>.cloudfront.net`,
+   * AWS certificate) in front of an internal ALB (VPC origin). The CloudFront web ACL lives in
+   * us-east-1 (DailyTasks-Edge stack); pass its ARN here (output WebAclArn).
+   */
+  edgeWebAclArn?: string;
   /** Optional WAF IP allow-list (CIDRs, comma-separated): when set, every other source IP is blocked. */
   allowedCidrs?: string;
   /** WAF rate limits per source IP per 5 minutes (all requests / sign-in endpoints). */
@@ -114,7 +124,11 @@ export class AppStack extends Stack {
 
     /* ------------------------------ Alarms ----------------------------- */
     const alarmTopic = new sns.Topic(this, 'AlarmTopic', { displayName: `${prefix} alarms` });
-    if (props.alarmEmail) alarmTopic.addSubscription(new subs.EmailSubscription(props.alarmEmail));
+    // Ops mailbox is optional until opening access; invalid/placeholder addresses are refused.
+    const alarmEmailError = props.alarmEmail ? validAlarmEmail(props.alarmEmail) : null;
+    if (alarmEmailError) Annotations.of(this).addError(alarmEmailError);
+    else if (props.alarmEmail) alarmTopic.addSubscription(new subs.EmailSubscription(props.alarmEmail));
+    else Annotations.of(this).addWarning('No alarm e-mail configured: alarms fire but nobody is notified (set ALARM_EMAIL and redeploy).');
     const alarm = (a: cloudwatch.Alarm) => a.addAlarmAction(new cwActions.SnsAction(alarmTopic));
 
     /* ----------------------------- Database ---------------------------- */
@@ -200,16 +214,27 @@ export class AppStack extends Stack {
       : props.domainName && zone
         ? new acm.Certificate(this, 'Certificate', { domainName: props.domainName, validation: acm.CertificateValidation.fromDns(zone) })
         : undefined;
-    const https = !!certificate;
+    // Production without any custom-domain setting is served by CloudFront (valid HTTPS on *.cloudfront.net).
+    const cloudFront = isProd && !props.domainName && !props.certificateArn && !props.publicUrl;
+    const https = !!certificate || cloudFront;
     const publicUrl = props.publicUrl ?? (props.domainName ? `https://${props.domainName}` : undefined);
-    if (isProd && !https) {
+    if (isProd && !cloudFront && !certificate) {
       Annotations.of(this).addError(
-        'Production requires HTTPS: pass -c production:certificateArn=<acm arn> or -c production:domainName=<host> with production:hostedZoneId/hostedZoneName. ' +
-          'Service workers, PWA install, Web Push and Secure cookies do not work over HTTP.',
+        'Production requires HTTPS: pass -c production:certificateArn=<acm arn> or -c production:domainName=<host> with production:hostedZoneId/hostedZoneName ' +
+          '(or no domain settings at all to use the CloudFront domain). Service workers, PWA install, Web Push and Secure cookies do not work over HTTP.',
       );
     }
-    if (isProd && (!publicUrl || !publicUrl.startsWith('https://'))) {
+    if (isProd && !cloudFront && (!publicUrl || !publicUrl.startsWith('https://'))) {
       Annotations.of(this).addError('Production requires a custom https domain: set production:domainName (or production:publicUrl=https://...).');
+    }
+    const edgeAclValid = !!props.edgeWebAclArn && /^arn:aws[a-z-]*:wafv2:us-east-1:[0-9]{12}:global\/webacl\/.+$/.test(props.edgeWebAclArn);
+    if (cloudFront) {
+      if (!props.edgeWebAclArn) {
+        Annotations.of(this).addError('No custom domain: production is served through CloudFront. Deploy DailyTasks-Edge (us-east-1) first and pass -c production:edgeWebAclArn=<WebAclArn output>.');
+      } else if (!edgeAclValid) {
+        Annotations.of(this).addError('edgeWebAclArn must be a CloudFront (global, us-east-1) WAF web ACL ARN');
+      }
+      Annotations.of(this).addWarning('No custom domain: the app is served at https://<id>.cloudfront.net (see docs/PRODUCTION_PLAN.md for connecting a domain later).');
     }
     if (!isProd && !https) {
       Annotations.of(this).addWarning('No HTTPS certificate: the app works in desktop browsers, but PWA install, the service worker and push notifications will NOT work on phones.');
@@ -223,16 +248,37 @@ export class AppStack extends Stack {
     }
     if (allowlist.some((e) => !EMAIL_RE.test(e))) Annotations.of(this).addError('accessAllowlist contains an entry that is not an e-mail address');
     if (accessMode === 'restricted') Annotations.of(this).addWarning(`RESTRICTED ACCEPTANCE MODE: only ${allowlist.length} allow-listed account(s) can sign in.`);
+    // R11: the CloudFront default certificate (*.cloudfront.net) forces the TLSv1 security policy. Employees
+    // may only be admitted on a verified custom domain with an ACM certificate and a TLS 1.2+ ALB policy.
+    if (isProd && accessMode === 'open' && (cloudFront || !certificate)) {
+      Annotations.of(this).addError(
+        'Opening production requires a verified custom domain with an ACM certificate (ALB policy TLS 1.2+). The CloudFront default domain only supports the TLSv1 policy and is restricted to acceptance testing.',
+      );
+    }
+    if (isProd && accessMode === 'open' && (!props.alarmEmail || alarmEmailError)) {
+      Annotations.of(this).addError('Opening production requires a valid operations mailbox for alarms (-c alarmEmail=...).');
+    }
 
     /* ------------------------- Cognito e-mail via SES ------------------------- */
     if (isProd && !props.sesFromAddress) {
-      Annotations.of(this).addError('Production requires SES for Cognito e-mail: deploy DailyTasks-Mail, wait until verified, then pass -c production:sesFromAddress=no-reply@<hostedZoneName>.');
+      if (accessMode === 'open') {
+        Annotations.of(this).addError('Opening production requires SES for Cognito e-mail (needs a custom domain): deploy DailyTasks-Mail, wait until verified, then pass -c production:sesFromAddress=no-reply@<hostedZoneName>.');
+      } else {
+        Annotations.of(this).addWarning('Restricted acceptance without SES: Cognito sends from its default address (about 50 e-mails per day). SES is required before opening.');
+      }
     }
     if (props.sesFromAddress && (!EMAIL_RE.test(props.sesFromAddress) || !props.hostedZoneName || !props.sesFromAddress.toLowerCase().endsWith(`@${props.hostedZoneName.toLowerCase()}`))) {
       Annotations.of(this).addError('sesFromAddress must be an address on the hosted-zone domain (the SES identity created by DailyTasks-Mail).');
     }
 
     /* ------------------------------ Storage ---------------------------- */
+    const corsRule = (origin: string): s3.CorsRule => ({
+      allowedMethods: [s3.HttpMethods.PUT, s3.HttpMethods.GET, s3.HttpMethods.HEAD],
+      allowedOrigins: [origin],
+      allowedHeaders: ['*'],
+      exposedHeaders: ['ETag'],
+      maxAge: 3000,
+    });
     const bucket = new s3.Bucket(this, 'Attachments', {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
@@ -242,15 +288,8 @@ export class AppStack extends Stack {
       removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
       autoDeleteObjects: !isProd,
       // Browsers (incl. the installed PWA) upload/download directly with pre-signed URLs.
-      cors: [
-        {
-          allowedMethods: [s3.HttpMethods.PUT, s3.HttpMethods.GET, s3.HttpMethods.HEAD],
-          allowedOrigins: publicUrl ? [publicUrl] : ['*'],
-          allowedHeaders: ['*'],
-          exposedHeaders: ['ETag'],
-          maxAge: 3000,
-        },
-      ],
+      // CloudFront layout: the origin (distribution domain) is only known later — added below.
+      cors: cloudFront ? undefined : [corsRule(publicUrl ?? '*')],
       lifecycleRules: [
         { abortIncompleteMultipartUploadAfter: Duration.days(1) },
         // Generated PDF reports are short-lived (the worker also deletes them after REPORT_RETENTION_DAYS).
@@ -341,6 +380,8 @@ export class AppStack extends Stack {
       idTokenValidity: Duration.hours(1),
       refreshTokenValidity: Duration.days(30),
       enableTokenRevocation: true,
+      // Sign-in goes through the API (USER_PASSWORD_AUTH); no hosted UI, so no OAuth flows or callback URLs.
+      disableOAuth: true,
     });
 
     /* ------------------------------ Compute ---------------------------- */
@@ -351,10 +392,76 @@ export class AppStack extends Stack {
       defaultCloudMapNamespace: { name: `${prefix}.local` },
     });
 
-    const albSg = new ec2.SecurityGroup(this, 'AlbSg', { vpc, description: 'Public load balancer' });
+    const albSg = new ec2.SecurityGroup(this, 'AlbSg', { vpc, description: cloudFront ? 'Internal load balancer (CloudFront VPC origin only)' : 'Public load balancer' });
     // WebSockets (/api/v1/realtime) pass through the ALB; the API pings every 25 s, well inside the idle timeout.
-    const alb = new elbv2.ApplicationLoadBalancer(this, 'Alb', { vpc, internetFacing: true, securityGroup: albSg, dropInvalidHeaderFields: true, idleTimeout: Duration.seconds(120) });
-    const appUrl = publicUrl ?? `${https ? 'https' : 'http'}://${alb.loadBalancerDnsName}`;
+    const alb = new elbv2.ApplicationLoadBalancer(this, 'Alb', {
+      vpc,
+      internetFacing: !cloudFront,
+      ...(cloudFront ? { vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS } } : {}),
+      securityGroup: albSg,
+      dropInvalidHeaderFields: true,
+      idleTimeout: Duration.seconds(120),
+    });
+    let distribution: cloudfront.Distribution | undefined;
+    if (cloudFront) {
+      // Only CloudFront's origin-facing network can reach the internal ALB.
+      // The prefix-list lookup needs a concrete account/region; an environment-agnostic synth (e.g. a
+      // credential-less `cdk synth` of other stacks) records an error instead of crashing the whole app.
+      if (Token.isUnresolved(this.account) || Token.isUnresolved(this.region)) {
+        Annotations.of(this).addError('The CloudFront layout needs an explicit account and region (-c account=… -c region=eu-north-1).');
+      } else {
+        const cfPrefixList = ec2.PrefixList.fromLookup(this, 'CloudFrontOriginFacing', { prefixListName: 'com.amazonaws.global.cloudfront.origin-facing' });
+        albSg.addIngressRule(ec2.Peer.prefixList(cfPrefixList.prefixListId), ec2.Port.tcp(80), 'CloudFront VPC origin');
+      }
+      const origin = origins.VpcOrigin.withApplicationLoadBalancer(alb, { protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY, httpPort: 80, readTimeout: Duration.seconds(60) });
+      // HSTS for this host only: one year, NO includeSubDomains and NO preload — *.cloudfront.net is a
+      // shared AWS domain. Overrides whatever the origin sends so every response carries the same policy.
+      const securityHeaders = new cloudfront.ResponseHeadersPolicy(this, 'SecurityHeaders', {
+        comment: `${prefix}: HSTS (host only)`,
+        securityHeadersBehavior: {
+          strictTransportSecurity: { accessControlMaxAge: Duration.days(365), includeSubdomains: false, preload: false, override: true },
+        },
+      });
+      // HTTPS ONLY on every behaviour: plain-HTTP requests get 403 from CloudFront (no redirects for
+      // application, authentication or live-update traffic). Everything except hashed static assets
+      // is uncached and receives all viewer headers (Host/Origin for the same-origin checks, cookies,
+      // Sec-WebSocket-* for the live-update upgrade).
+      const dynamic: cloudfront.BehaviorOptions = {
+        origin,
+        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
+        allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+        cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+        originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER,
+        responseHeadersPolicy: securityHeaders,
+        compress: true,
+      };
+      distribution = new cloudfront.Distribution(this, 'Distribution', {
+        comment: `${prefix} (CloudFront domain: restricted acceptance only)`,
+        // Frontend pages (and anything not matched below).
+        defaultBehavior: dynamic,
+        // Evaluated in this order (most specific first).
+        additionalBehaviors: {
+          '/api/v1/realtime*': { ...dynamic, compress: false }, // WebSocket live updates
+          '/api/*': dynamic, // REST API incl. attachment/document download-URL endpoints
+          '/bff/*': dynamic, // web BFF proxy (API calls from the browser)
+          '/session/*': dynamic, // sign-in, first password, sign-out
+          // Immutable, content-hashed Next.js assets: the only cached path.
+          '/_next/static/*': {
+            origin,
+            viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
+            allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
+            cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+            responseHeadersPolicy: securityHeaders,
+            compress: true,
+          },
+        },
+        webAclId: edgeAclValid ? props.edgeWebAclArn : undefined,
+        priceClass: cloudfront.PriceClass.PRICE_CLASS_200, // includes Middle East edge locations
+        httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
+      });
+    }
+    const appUrl = distribution ? `https://${distribution.distributionDomainName}` : (publicUrl ?? `${https ? 'https' : 'http'}://${alb.loadBalancerDnsName}`);
+    if (cloudFront) bucket.addCorsRule(corsRule(appUrl));
     if (zone && props.domainName) {
       new route53.ARecord(this, 'AppAlias', { zone, recordName: props.domainName, target: route53.RecordTarget.fromAlias(new route53Targets.LoadBalancerTarget(alb)) });
     }
@@ -422,6 +529,8 @@ export class AppStack extends Stack {
         COGNITO_USER_POOL_ID: userPool.userPoolId,
         COGNITO_CLIENT_ID: userPoolClient.userPoolClientId,
         CORS_ORIGINS: appUrl,
+        // CloudFront → ALB → API: the real client is one hop further back in X-Forwarded-For.
+        TRUST_PROXY_HOPS: cloudFront ? '2' : '1',
         SWAGGER_ENABLED: isProd ? 'false' : 'true',
         ACCESS_MODE: accessMode,
         ...(accessMode === 'restricted' ? { ACCESS_ALLOWLIST: allowlist.join(',') } : {}),
@@ -591,6 +700,7 @@ export class AppStack extends Stack {
         // Server-side BFF calls the API over Cloud Map inside the VPC.
         API_INTERNAL_URL: `http://api.${prefix}.local:3000/api/v1`,
         COOKIE_SECURE: https ? 'true' : 'false',
+        CLIENT_IP_PROXY_HOPS: cloudFront ? '2' : '1',
       },
       healthCheck: {
         command: ['CMD-SHELL', "node -e \"fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""],
@@ -619,8 +729,15 @@ export class AppStack extends Stack {
     /* --------------------------- Load balancer -------------------------- */
     const listener = certificate
       ? alb.addListener('Https', { port: 443, certificates: [certificate], sslPolicy: elbv2.SslPolicy.RECOMMENDED_TLS })
-      : alb.addListener('Http', { port: 80 });
-    if (certificate) alb.addRedirect({ sourcePort: 80, targetPort: 443 });
+      : alb.addListener('Http', { port: 80, open: !cloudFront });
+    // Custom-domain layout: plain HTTP is rejected (403), never redirected — same rule as CloudFront.
+    if (certificate) {
+      alb.addListener('HttpReject', {
+        port: 80,
+        open: true,
+        defaultAction: elbv2.ListenerAction.fixedResponse(403, { contentType: 'text/plain', messageBody: 'HTTPS required' }),
+      });
+    }
 
     const webTg = listener.addTargets('Web', {
       port: 3000,
@@ -693,101 +810,21 @@ export class AppStack extends Stack {
     }
 
     /* ------------------------------- AWS WAF ------------------------------- */
-    // Production always; staging only with -c staging:waf=true. Rate limits are per source IP per 5 min
-    // and complement the API's in-memory per-task throttling. Many employees behind one office NAT
-    // share an IP: keep the general limit generous.
-    if (isProd || props.wafRateLimit !== undefined) {
-      const visibility = (name: string): wafv2.CfnWebACL.VisibilityConfigProperty => ({ cloudWatchMetricsEnabled: true, sampledRequestsEnabled: true, metricName: `${prefix}-${name}` });
-      const managed = (priority: number, name: string, overrides: string[] = []): wafv2.CfnWebACL.RuleProperty => ({
-        name,
-        priority,
-        overrideAction: { none: {} },
-        statement: {
-          managedRuleGroupStatement: {
-            vendorName: 'AWS',
-            name,
-            ...(overrides.length ? { ruleActionOverrides: overrides.map((r) => ({ name: r, actionToUse: { count: {} } })) } : {}),
-          },
-        },
-        visibilityConfig: visibility(name),
-      });
-      const startsWith = (path: string): wafv2.CfnWebACL.StatementProperty => ({
-        byteMatchStatement: { fieldToMatch: { uriPath: {} }, positionalConstraint: 'STARTS_WITH', searchString: path, textTransformations: [{ priority: 0, type: 'NONE' }] },
-      });
-      const rules: wafv2.CfnWebACL.RuleProperty[] = [];
-      const cidrs = (props.allowedCidrs ?? '').split(',').map((s) => s.trim()).filter(Boolean);
-      if (cidrs.length) {
-        const ipSet = new wafv2.CfnIPSet(this, 'AllowedIps', { scope: 'REGIONAL', ipAddressVersion: 'IPV4', addresses: cidrs, description: `${prefix} acceptance IP allow-list` });
-        rules.push({
-          name: 'block-outside-allowlist',
-          priority: 0,
-          action: { block: {} },
-          statement: { notStatement: { statement: { ipSetReferenceStatement: { arn: ipSet.attrArn } } } },
-          visibilityConfig: visibility('ip-allowlist'),
-        });
-      }
-      rules.push(
-        managed(1, 'AWSManagedRulesAmazonIpReputationList'),
-        managed(2, 'AWSManagedRulesKnownBadInputsRuleSet'),
-        // Uploads go straight to S3, but JSON bodies (comments, reports) can be legitimately large or
-        // contain markup-like text; those two rules only COUNT (the app escapes all output).
-        managed(3, 'AWSManagedRulesCommonRuleSet', ['SizeRestrictions_BODY', 'CrossSiteScripting_BODY']),
-        {
-          name: 'rate-limit-sign-in',
-          priority: 10,
-          action: { block: {} },
-          statement: {
-            rateBasedStatement: {
-              limit: props.wafAuthRateLimit ?? 200,
-              evaluationWindowSec: 300,
-              aggregateKeyType: 'IP',
-              scopeDownStatement: { orStatement: { statements: [startsWith('/api/v1/auth/'), startsWith('/session/')] } },
-            },
-          },
-          visibilityConfig: visibility('rate-sign-in'),
-        },
-        {
-          name: 'rate-limit-all',
-          priority: 11,
-          action: { block: {} },
-          statement: { rateBasedStatement: { limit: props.wafRateLimit ?? 6000, evaluationWindowSec: 300, aggregateKeyType: 'IP' } },
-          visibilityConfig: visibility('rate-all'),
-        },
-      );
-      const acl = new wafv2.CfnWebACL(this, 'WebAcl', {
-        name: prefix,
+    // Custom-domain layout: regional WAF on the public ALB (production always; staging with -c staging:waf=true).
+    // CloudFront layout: the WAF is attached to the distribution (DailyTasks-Edge, us-east-1) instead.
+    // Rate limits are per source IP per 5 min; many employees behind one office NAT share an IP.
+    if ((isProd && !cloudFront) || props.wafRateLimit !== undefined) {
+      const { acl, signInBlocks } = createWebAcl(this, {
+        prefix,
         scope: 'REGIONAL',
-        defaultAction: { allow: {} },
-        rules,
-        visibilityConfig: visibility('acl'),
+        allowedCidrs: props.allowedCidrs,
+        rateLimit: props.wafRateLimit,
+        authRateLimit: props.wafAuthRateLimit,
+        logRetentionDays: cfg.logRetentionDays,
+        retainLogs: isProd,
       });
       new wafv2.CfnWebACLAssociation(this, 'WebAclAssociation', { resourceArn: alb.loadBalancerArn, webAclArn: acl.attrArn });
-      // WAF logs: bearer tokens and session cookies are redacted (never stored in logs).
-      const wafLogs = new logs.LogGroup(this, 'WafLogs', {
-        logGroupName: `aws-waf-logs-${prefix}`,
-        retention: cfg.logRetentionDays as logs.RetentionDays,
-        removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
-      });
-      new wafv2.CfnLoggingConfiguration(this, 'WafLogging', {
-        resourceArn: acl.attrArn,
-        logDestinationConfigs: [`arn:${this.partition}:logs:${this.region}:${this.account}:log-group:${wafLogs.logGroupName}`],
-        redactedFields: [{ singleHeader: { Name: 'authorization' } }, { singleHeader: { Name: 'cookie' } }],
-      }).node.addDependency(wafLogs);
-      alarm(
-        new cloudwatch.Alarm(this, 'WafSignInBlocksAlarm', {
-          metric: new cloudwatch.Metric({
-            namespace: 'AWS/WAFV2',
-            metricName: 'BlockedRequests',
-            dimensionsMap: { WebACL: prefix, Region: this.region, Rule: `${prefix}-rate-sign-in` },
-            statistic: 'Sum',
-            period: Duration.minutes(5),
-          }),
-          threshold: 50,
-          evaluationPeriods: 1,
-          treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-          alarmDescription: 'Sign-in rate limit is blocking requests (password guessing, or an office NAT needs a higher limit)',
-        }),
-      );
+      alarm(signInBlocksAlarm(this, signInBlocks));
     }
 
     /* ----------------------------- Scaling ----------------------------- */
@@ -804,6 +841,7 @@ export class AppStack extends Stack {
 
     /* ------------------------------ Outputs ---------------------------- */
     new CfnOutput(this, 'AppUrl', { value: appUrl });
+    if (distribution) new CfnOutput(this, 'DistributionDomainName', { value: distribution.distributionDomainName });
     new CfnOutput(this, 'ApiUrl', { value: `${appUrl}/api/v1`, description: 'Public REST API base URL' });
     new CfnOutput(this, 'UserPoolId', { value: userPool.userPoolId });
     new CfnOutput(this, 'UserPoolClientId', { value: userPoolClient.userPoolClientId });

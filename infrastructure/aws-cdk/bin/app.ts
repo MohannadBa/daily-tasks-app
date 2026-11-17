@@ -2,6 +2,7 @@ import { App } from 'aws-cdk-lib';
 import { AppStack } from '../lib/app-stack';
 import { environments } from '../lib/config';
 import { DrStack } from '../lib/dr-stack';
+import { EdgeStack } from '../lib/edge-stack';
 import { MailStack } from '../lib/mail-stack';
 import { RegistryStack } from '../lib/registry-stack';
 
@@ -35,6 +36,18 @@ new DrStack(app, 'DailyTasks-DR', {
   terminationProtection: true,
 });
 
+// Edge (us-east-1): CloudFront web ACL for production served on the CloudFront domain (no custom domain).
+new EdgeStack(app, 'DailyTasks-Edge', {
+  env: { account: env.account, region: 'us-east-1' },
+  description: 'DailyTasks production edge: CloudFront WAF (us-east-1)',
+  allowedCidrs: ctx('production:allowedCidrs'),
+  wafRateLimit: num('production:wafRateLimit'),
+  wafAuthRateLimit: num('production:wafAuthRateLimit'),
+  alarmEmail: ctx('alarmEmail'),
+  logRetentionDays: environments.production.logRetentionDays,
+  terminationProtection: true,
+});
+
 // SES sending identity for Cognito e-mail (deploy + verify before the application stack).
 const mailZoneId = ctx('mail:hostedZoneId') ?? ctx('hostedZoneId');
 const mailZoneName = ctx('mail:hostedZoneName') ?? ctx('hostedZoneName');
@@ -58,6 +71,7 @@ for (const config of Object.values(environments)) {
     vapidPrivateKeySecretArn: ctx(`${config.name}:vapidPrivateKeySecretArn`),
     personalDataKeyPreviousSecretArn: ctx(`${config.name}:personalDataKeyPreviousSecretArn`),
     backupReplicaKmsKeyArn: ctx(`${config.name}:backupReplicaKmsKeyArn`),
+    edgeWebAclArn: ctx(`${config.name}:edgeWebAclArn`),
     vapidSubject: ctx(`${config.name}:vapidSubject`),
     accessMode: ctx(`${config.name}:accessMode`) as 'open' | 'restricted' | undefined,
     accessAllowlist: ctx(`${config.name}:accessAllowlist`),

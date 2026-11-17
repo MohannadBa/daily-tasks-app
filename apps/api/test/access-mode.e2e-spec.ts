@@ -78,6 +78,9 @@ describe('restricted acceptance mode (launch gate)', () => {
   it('public endpoints stay minimal: health and the push public key only; admin routes need a token', async () => {
     expect((await api(ctx).get('/users')).status).toBe(401);
     expect((await api(ctx).get('/departments')).status).toBe(401);
-    expect((await api(ctx).get('/push/vapid-public-key')).status).toBe(200);
+    const pub = await api(ctx).get('/push/vapid-public-key');
+    expect(pub.status).toBe(200);
+    // HSTS for this host only (no includeSubDomains / preload on the shared CloudFront domain).
+    expect(pub.headers['strict-transport-security']).toBe('max-age=31536000');
   });
 });

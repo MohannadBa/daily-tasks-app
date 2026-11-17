@@ -6,7 +6,8 @@
 
 ```
  Phones (installed PWA) · desktop browsers
-        │ HTTPS  https://tasks.example.com   (Route 53 alias → ALB, ACM certificate, HTTP→HTTPS redirect)
+        │ HTTPS  https://tasks.example.com   (Route 53 alias → ALB, ACM certificate TLS 1.2+, HTTP → 403)
+        │        (until a domain exists: https://<id>.cloudfront.net → CloudFront https-only → internal ALB; acceptance only)
         ▼
  ┌──────────────── Application Load Balancer (public subnets) ────────────────┐
  │  /api/*, /health ──► api service          everything else ──► web service  │
@@ -60,6 +61,7 @@ Set by the CDK stack in AWS, by `docker-compose.yml` locally. **No real secret i
 | `DATABASE_URL` | ✓ | ✓ | | built at start from `DB_HOST/DB_PORT/DB_USERNAME/DB_PASSWORD/DB_NAME` | Secrets Manager (RDS-generated); `sslmode=require` |
 | `DB_SSLMODE`, `DB_CONNECTION_LIMIT` | ✓ | ✓ | | optional | defaults `require`, `10` |
 | `DB_SSL_CA_FILE` | ✓ | ✓ | | stack = `/app/certs/rds-global-bundle.pem` (baked into the images) | verifies the RDS server certificate + host name (Prisma `sslaccept=strict`); unset = encrypted but unverified TLS |
+| `TRUST_PROXY_HOPS` (api), `CLIENT_IP_PROXY_HOPS` (web) | ✓ | | ✓ | stack: 2 behind CloudFront (no custom domain), 1 with ALB + custom domain | how many proxies to skip in `X-Forwarded-For` to find the real client IP (per-IP rate limits) |
 | `ACCESS_MODE`, `ACCESS_ALLOWLIST` | ✓ | | | stack (`<env>:accessMode`, `<env>:accessAllowlist`); production defaults to `restricted` | launch gate: only allow-listed e-mails can sign in / be provisioned |
 | `DB_HOST_OVERRIDE` | ✓ | | | one-off task override only (restore drills) | points at a restored `*.rds.amazonaws.com` instance |
 | `PERSONAL_DATA_KEY_PREVIOUS` | ✓ | | | Secrets Manager, **only during a key rotation** (`<env>:personalDataKeyPreviousSecretArn`) | decrypt fallback; see OPERATIONS.md §8 |
@@ -126,8 +128,9 @@ The `VAPID_*` names are accepted as aliases (the `WEB_PUSH_*` name wins if both 
 ## HTTPS / PWA / push checklist after a deploy
 | Check | How |
 |---|---|
-| HTTP redirects to HTTPS | `curl -I http://<domain>` → 301 to https |
-| HSTS | `curl -sI https://<domain>/login \| grep -i strict-transport` |
+| Plain HTTP rejected (no redirect) | `curl -s -o /dev/null -w '%{http_code}' http://<domain>/` → `403` (CloudFront `https-only`; custom-domain ALB port 80 fixed 403) |
+| HSTS (host only) | `curl -sI https://<domain>/login \| grep -i strict-transport` → `max-age=31536000` (no includeSubDomains/preload) |
+| TLS minimum | custom domain: `openssl s_client -connect <domain>:443 -tls1_1` → refused (ALB policy TLS 1.2+). CloudFront default domain: **TLSv1 policy, not configurable** — restricted acceptance only (PRODUCTION_PLAN.md R11) |
 | Manifest | `curl -s https://<domain>/manifest.webmanifest` → JSON, `start_url` `/`, `display` `standalone` |
 | Service worker scope | `curl -sI https://<domain>/sw.js` → `Cache-Control: no-cache, no-store…`, `Service-Worker-Allowed: /` |
 | Icons | `/icons/icon-192.png`, `/icons/icon-512.png`, `/icons/maskable-512.png`, `/icons/badge-96.png`, `/apple-touch-icon.png` → 200 image/png |

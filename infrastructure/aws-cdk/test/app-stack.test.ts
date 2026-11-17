@@ -3,6 +3,7 @@ import { Annotations, Match, Template } from 'aws-cdk-lib/assertions';
 import { describe, expect, it } from 'vitest';
 import { AppStack } from '../lib/app-stack';
 import { DrStack } from '../lib/dr-stack';
+import { EdgeStack } from '../lib/edge-stack';
 import { MailStack } from '../lib/mail-stack';
 import { environments } from '../lib/config';
 
@@ -18,20 +19,23 @@ const synth = (name: 'staging' | 'production') => {
 };
 
 describe('HTTPS and custom domain', () => {
-  it('production refuses to synthesize without HTTPS and a custom https domain', () => {
-    const stack = new AppStack(new App(), 'Test-prod-http', { env: ENV, config: environments.production, imageTag: 'test' });
-    const errors = Annotations.fromStack(stack).findError('*', Match.stringLikeRegexp('Production requires (HTTPS|a custom)'));
-    expect(errors.length).toBe(2);
+  it('production never runs on plain HTTP: a domain without a certificate is refused; no domain at all means CloudFront', () => {
+    const noCert = new AppStack(new App(), 'Test-prod-http', { env: ENV, config: environments.production, imageTag: 'test', domainName: 'tasks.example.com' });
+    expect(Annotations.fromStack(noCert).findError('*', Match.stringLikeRegexp('Production requires HTTPS')).length).toBe(1);
+    const noDomain = new AppStack(new App(), 'Test-prod-cf', { env: ENV, config: environments.production, imageTag: 'test' });
+    expect(Annotations.fromStack(noDomain).findError('*', Match.stringLikeRegexp('Production requires')).length).toBe(0);
+    expect(Annotations.fromStack(noDomain).findError('*', Match.stringLikeRegexp('Deploy DailyTasks-Edge')).length).toBe(1);
   });
 
-  it('domain + hosted zone: DNS-validated certificate, HTTPS listener, HTTP->HTTPS redirect, alias record, Secure cookies, CORS pinned', () => {
+  it('domain + hosted zone: DNS-validated certificate, TLS 1.2+ HTTPS listener, plain HTTP rejected with 403 (no redirect), alias record, Secure cookies, CORS pinned', () => {
     const t = synth('production');
     t.hasResourceProperties('AWS::CertificateManager::Certificate', { DomainName: 'tasks.example.com', ValidationMethod: 'DNS' });
-    t.hasResourceProperties('AWS::ElasticLoadBalancingV2::Listener', { Port: 443, Protocol: 'HTTPS' });
+    t.hasResourceProperties('AWS::ElasticLoadBalancingV2::Listener', { Port: 443, Protocol: 'HTTPS', SslPolicy: 'ELBSecurityPolicy-TLS13-1-2-2021-06' });
     t.hasResourceProperties('AWS::ElasticLoadBalancingV2::Listener', {
       Port: 80,
-      DefaultActions: [Match.objectLike({ Type: 'redirect', RedirectConfig: Match.objectLike({ Protocol: 'HTTPS', Port: '443' }) })],
+      DefaultActions: [Match.objectLike({ Type: 'fixed-response', FixedResponseConfig: Match.objectLike({ StatusCode: '403' }) })],
     });
+    expect(JSON.stringify(t.toJSON())).not.toContain('"Type":"redirect"');
     t.hasResourceProperties('AWS::Route53::RecordSet', { Name: 'tasks.example.com.', Type: 'A' });
     const containers = Object.values(t.findResources('AWS::ECS::TaskDefinition')).flatMap(
       (r) => (r as { Properties: { ContainerDefinitions: Array<{ Name: string; Environment?: Array<{ Name: string; Value: unknown }> }> } }).Properties.ContainerDefinitions,
@@ -221,8 +225,12 @@ describe('production-first launch', () => {
       DeletionProtection: 'ACTIVE',
       EmailConfiguration: Match.objectLike({ EmailSendingAccount: 'DEVELOPER', From: Match.stringLikeRegexp('no-reply@example.com'), SourceArn: Match.anyValue() }),
     });
+    // Restricted acceptance may run on Cognito's default sender; opening requires SES.
     const noSes = build({ sesFromAddress: undefined });
-    expect(Annotations.fromStack(noSes).findError('*', Match.stringLikeRegexp('requires SES')).length).toBe(1);
+    expect(Annotations.fromStack(noSes).findError('*', Match.stringLikeRegexp('requires SES')).length).toBe(0);
+    expect(Annotations.fromStack(noSes).findWarning('*', Match.stringLikeRegexp('without SES')).length).toBe(1);
+    const openNoSes = build({ sesFromAddress: undefined, accessMode: 'open', accessAllowlist: undefined, alarmEmail: 'ops@alrasiyat.sa' });
+    expect(Annotations.fromStack(openNoSes).findError('*', Match.stringLikeRegexp('Opening production requires SES')).length).toBe(1);
     const wrongDomain = build({ sesFromAddress: 'no-reply@other.org' });
     expect(Annotations.fromStack(wrongDomain).findError('*', Match.stringLikeRegexp('hosted-zone domain')).length).toBe(1);
   });
@@ -363,5 +371,181 @@ describe('region pin (R2)', () => {
   it('staging is not pinned', () => {
     const st = new AppStack(new App(), 'Test-stg-region', { env: { account: '111111111111', region: 'eu-central-1' }, config: environments.staging, imageTag: 'test' });
     expect(errors(st as AppStack)).toHaveLength(0);
+  });
+});
+
+describe('no custom domain: CloudFront layout (restricted acceptance)', () => {
+  const EDGE_ACL = 'arn:aws:wafv2:us-east-1:111111111111:global/webacl/dailytasks-production-edge/0b0c1d2e-aaaa-bbbb-cccc-1234567890ab';
+  const NORTH = { account: '111111111111', region: 'eu-north-1' };
+  const base = { sesFromAddress: undefined, accessAllowlist: 'admin@alrasiyat.sa,qa@alrasiyat.sa', backupReplicaKmsKeyArn: IRELAND_KEY };
+  const cf = (extra: Record<string, unknown> = {}) => new AppStack(new App(), 'Test-prod-cf', { env: NORTH, config: environments.production, imageTag: 'test', ...base, edgeWebAclArn: EDGE_ACL, ...extra });
+  const containerEnv = (t: Template, name: string) => {
+    const defs = Object.values(t.findResources('AWS::ECS::TaskDefinition')).flatMap((d) => (d as { Properties: { ContainerDefinitions: Array<{ Name: string; Environment?: Array<{ Name: string; Value: unknown }> }> } }).Properties.ContainerDefinitions);
+    return Object.fromEntries((defs.find((c) => c.Name === name)!.Environment ?? []).map((e) => [e.Name, e.Value]));
+  };
+
+  it('synthesizes without errors with only the edge ACL (no domain, no SES, no alarm mailbox)', () => {
+    expect(Annotations.fromStack(cf()).findError('*', Match.anyValue())).toHaveLength(0);
+    const bad = cf({ edgeWebAclArn: 'arn:aws:wafv2:eu-north-1:111111111111:regional/webacl/x/1' });
+    expect(Annotations.fromStack(bad).findError('*', Match.stringLikeRegexp('CloudFront \\(global, us-east-1\\)')).length).toBe(1);
+  });
+
+  it('HTTPS at the CloudFront domain; the ALB is internal and reachable only from CloudFront', () => {
+    const t = Template.fromStack(cf());
+    t.hasResourceProperties('AWS::CloudFront::Distribution', {
+      DistributionConfig: Match.objectLike({
+        WebACLId: EDGE_ACL,
+        PriceClass: 'PriceClass_200',
+        HttpVersion: 'http2and3',
+        DefaultCacheBehavior: Match.objectLike({ ViewerProtocolPolicy: 'https-only', AllowedMethods: Match.arrayWith(['POST', 'DELETE']) }),
+        Origins: [Match.objectLike({ VpcOriginConfig: Match.anyValue() })],
+      }),
+    });
+    t.resourceCountIs('AWS::CloudFront::VpcOrigin', 1);
+    t.hasResourceProperties('AWS::ElasticLoadBalancingV2::LoadBalancer', { Scheme: 'internal' });
+    t.resourceCountIs('AWS::CertificateManager::Certificate', 0);
+    t.resourceCountIs('AWS::Route53::RecordSet', 0);
+    // No regional WAF (the edge ACL protects the distribution) and no listener open to 0.0.0.0/0.
+    t.resourceCountIs('AWS::WAFv2::WebACL', 0);
+    const albSg = Object.values(t.findResources('AWS::EC2::SecurityGroup')).map((r) => (r as { Properties: Record<string, unknown> }).Properties).find((p) => String(p.GroupDescription).startsWith('Internal load balancer'))!;
+    expect(JSON.stringify(albSg.SecurityGroupIngress ?? [])).not.toContain('0.0.0.0/0');
+    const ingress = Object.values(t.findResources('AWS::EC2::SecurityGroupIngress')).map((r) => (r as { Properties: Record<string, unknown> }).Properties);
+    expect(ingress.some((i) => i.SourcePrefixListId && i.FromPort === 80)).toBe(true);
+  });
+
+  it('app configuration follows the CloudFront URL; client IP is one more trusted hop back', () => {
+    const t = Template.fromStack(cf());
+    const api = containerEnv(t, 'api');
+    const web = containerEnv(t, 'web');
+    expect(JSON.stringify(api.CORS_ORIGINS)).toContain('DomainName');
+    expect(api.TRUST_PROXY_HOPS).toBe('2');
+    expect(web.CLIENT_IP_PROXY_HOPS).toBe('2');
+    expect(web.COOKIE_SECURE).toBe('true');
+    expect(api.ACCESS_MODE).toBe('restricted');
+    const buckets = Object.values(t.findResources('AWS::S3::Bucket')).map((b) => (b as { Properties: Record<string, unknown> }).Properties);
+    expect(JSON.stringify(buckets.find((b) => b.CorsConfiguration)!.CorsConfiguration)).toContain('DomainName');
+    t.hasOutput('DistributionDomainName', {});
+    // Custom-domain layout keeps one hop.
+    expect(containerEnv(Template.fromStack(new AppStack(new App(), 'Test-prod-dom', { env: NORTH, config: environments.production, imageTag: 'test', ...PROD })), 'api').TRUST_PROXY_HOPS).toBe('1');
+  });
+
+  it('Cognito has no OAuth flows or callback URLs (sign-in is API-only)', () => {
+    const t = Template.fromStack(cf());
+    const client = Object.values(t.findResources('AWS::Cognito::UserPoolClient'))[0] as { Properties: Record<string, unknown> };
+    expect(client.Properties.AllowedOAuthFlowsUserPoolClient).toBe(false);
+    expect(client.Properties.CallbackURLs).toBeUndefined();
+    expect(client.Properties.AllowedOAuthFlows).toBeUndefined();
+  });
+
+  it('operations mailbox: optional (warning, no subscription), placeholder or invalid addresses refused, required to open', () => {
+    const none = cf();
+    expect(Annotations.fromStack(none).findWarning('*', Match.stringLikeRegexp('No alarm e-mail configured')).length).toBe(1);
+    Template.fromStack(none).resourceCountIs('AWS::SNS::Subscription', 0);
+    for (const bad of ['ops@example.com', 'ops@company.local', 'not-an-email']) {
+      expect(Annotations.fromStack(cf({ alarmEmail: bad })).findError('*', Match.stringLikeRegexp('alarmEmail')).length).toBe(1);
+    }
+    const ok = Template.fromStack(cf({ alarmEmail: 'ops@alrasiyat.sa' }));
+    ok.hasResourceProperties('AWS::SNS::Subscription', { Protocol: 'email', Endpoint: 'ops@alrasiyat.sa' });
+    const openNoMail = cf({ accessMode: 'open', accessAllowlist: undefined });
+    expect(Annotations.fromStack(openNoMail).findError('*', Match.stringLikeRegexp('valid operations mailbox')).length).toBe(1);
+  });
+
+  it('edge stack (us-east-1): CloudFront-scope WAF with the same rules, redacted logs, alarm without Region dimension', () => {
+    const t = Template.fromStack(new EdgeStack(new App(), 'Test-edge', { env: { account: '111111111111', region: 'us-east-1' }, logRetentionDays: 90 }));
+    t.hasResourceProperties('AWS::WAFv2::WebACL', {
+      Scope: 'CLOUDFRONT',
+      Rules: Match.arrayWith([
+        Match.objectLike({ Name: 'AWSManagedRulesCommonRuleSet' }),
+        Match.objectLike({ Name: 'rate-limit-sign-in', Statement: { RateBasedStatement: Match.objectLike({ Limit: 200, AggregateKeyType: 'IP' }) } }),
+        Match.objectLike({ Name: 'rate-limit-all', Statement: { RateBasedStatement: Match.objectLike({ Limit: 6000 }) } }),
+      ]),
+    });
+    t.hasResourceProperties('AWS::WAFv2::LoggingConfiguration', { RedactedFields: [{ SingleHeader: { Name: 'authorization' } }, { SingleHeader: { Name: 'cookie' } }] });
+    t.hasResourceProperties('AWS::Logs::LogGroup', { LogGroupName: 'aws-waf-logs-dailytasks-production-edge' });
+    const alarm = Object.values(t.findResources('AWS::CloudWatch::Alarm'))[0] as { Properties: { Dimensions: Array<{ Name: string }> } };
+    expect(alarm.Properties.Dimensions.map((d) => d.Name).sort()).toEqual(['Rule', 'WebACL']);
+    t.resourceCountIs('AWS::SNS::Subscription', 0);
+    t.hasOutput('WebAclArn', {});
+    const withIps = Template.fromStack(new EdgeStack(new App(), 'Test-edge-ip', { env: { account: '111111111111', region: 'us-east-1' }, logRetentionDays: 90, allowedCidrs: '203.0.113.0/24' }));
+    withIps.hasResourceProperties('AWS::WAFv2::IPSet', { Scope: 'CLOUDFRONT', Addresses: ['203.0.113.0/24'] });
+  });
+});
+
+describe('CloudFront security (R11 TLS, R12 HTTPS only, R13 private origin)', () => {
+  const EDGE_ACL = 'arn:aws:wafv2:us-east-1:111111111111:global/webacl/dailytasks-production-edge/0b0c1d2e-aaaa-bbbb-cccc-1234567890ab';
+  const NORTH = { account: '111111111111', region: 'eu-north-1' };
+  const base = { sesFromAddress: undefined, accessAllowlist: 'admin@alrasiyat.sa', backupReplicaKmsKeyArn: IRELAND_KEY, edgeWebAclArn: EDGE_ACL };
+  const cf = (extra: Record<string, unknown> = {}) => new AppStack(new App(), 'Test-cf-sec', { env: NORTH, config: environments.production, imageTag: 'test', ...base, ...extra });
+  const CACHING_DISABLED = '4135ea2d-6df8-44a3-9df3-4b5a84be39ad';
+  const CACHING_OPTIMIZED = '658327ea-f89d-4fab-a63d-7e88639e58f6';
+  const ALL_VIEWER = '216adef6-5c7f-47e4-b989-5492eafa07d3';
+  type Behavior = { PathPattern?: string; ViewerProtocolPolicy: string; CachePolicyId: string; OriginRequestPolicyId?: string; ResponseHeadersPolicyId?: unknown; AllowedMethods: string[] };
+  const config = (t: Template) =>
+    (Object.values(t.findResources('AWS::CloudFront::Distribution'))[0] as { Properties: { DistributionConfig: { DefaultCacheBehavior: Behavior; CacheBehaviors: Behavior[]; ViewerCertificate?: Record<string, unknown> } } }).Properties.DistributionConfig;
+
+  it('R12: every behaviour is HTTPS-only (HTTP gets 403 from CloudFront) — no redirects anywhere', () => {
+    const t = Template.fromStack(cf());
+    const c = config(t);
+    const all = [c.DefaultCacheBehavior, ...c.CacheBehaviors];
+    expect(all.length).toBe(6);
+    for (const b of all) expect(b.ViewerProtocolPolicy).toBe('https-only');
+    expect(JSON.stringify(t.toJSON())).not.toMatch(/redirect-to-https|"Type":"redirect"/);
+  });
+
+  it('R12/R13: frontend, live updates, API (incl. file endpoints), BFF and sign-in are never cached and receive all viewer headers; only hashed static assets are cached', () => {
+    const c = config(Template.fromStack(cf()));
+    expect(c.CacheBehaviors.map((b) => b.PathPattern)).toEqual(['/api/v1/realtime*', '/api/*', '/bff/*', '/session/*', '/_next/static/*']);
+    for (const b of [c.DefaultCacheBehavior, ...c.CacheBehaviors.filter((x) => x.PathPattern !== '/_next/static/*')]) {
+      expect(b.CachePolicyId).toBe(CACHING_DISABLED);
+      expect(b.OriginRequestPolicyId).toBe(ALL_VIEWER); // Host/Origin, cookies, Sec-WebSocket-* reach the origin
+      expect(b.AllowedMethods).toEqual(expect.arrayContaining(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']));
+    }
+    const statics = c.CacheBehaviors.find((b) => b.PathPattern === '/_next/static/*')!;
+    expect(statics.CachePolicyId).toBe(CACHING_OPTIMIZED);
+    expect(statics.AllowedMethods).toEqual(['GET', 'HEAD']);
+  });
+
+  it('R12: host-only HSTS (1 year, no includeSubDomains, no preload) on every behaviour', () => {
+    const t = Template.fromStack(cf());
+    t.hasResourceProperties('AWS::CloudFront::ResponseHeadersPolicy', {
+      ResponseHeadersPolicyConfig: Match.objectLike({
+        SecurityHeadersConfig: { StrictTransportSecurity: { AccessControlMaxAgeSec: 31536000, IncludeSubdomains: false, Preload: false, Override: true } },
+      }),
+    });
+    const c = config(t);
+    for (const b of [c.DefaultCacheBehavior, ...c.CacheBehaviors]) expect(b.ResponseHeadersPolicyId).toBeDefined();
+  });
+
+  it('R11: the CloudFront default certificate is used as-is (TLSv1 policy, not configurable) — no TLS 1.2 minimum is claimed', () => {
+    const c = config(Template.fromStack(cf()));
+    expect(c.ViewerCertificate?.CloudFrontDefaultCertificate ?? true).toBe(true);
+    expect(c.ViewerCertificate?.MinimumProtocolVersion).toBeUndefined();
+  });
+
+  it('R11: OPEN ACCESS is refused on the CloudFront domain; allowed only on a custom domain with ACM + TLS 1.2+', () => {
+    const open = { accessMode: 'open' as const, accessAllowlist: undefined, alarmEmail: 'ops@alrasiyat.sa' };
+    expect(Annotations.fromStack(cf(open)).findError('*', Match.stringLikeRegexp('verified custom domain with an ACM certificate')).length).toBe(1);
+    const domain = new AppStack(new App(), 'Test-open-domain', { env: NORTH, config: environments.production, imageTag: 'test', ...PROD, ...open });
+    expect(Annotations.fromStack(domain).findError('*', Match.anyValue())).toHaveLength(0);
+    Template.fromStack(domain).hasResourceProperties('AWS::ElasticLoadBalancingV2::Listener', { Port: 443, SslPolicy: 'ELBSecurityPolicy-TLS13-1-2-2021-06' });
+  });
+
+  it('R13: private origin — internal ALB in private subnets, HTTP-only VPC origin on port 80, ingress only from the CloudFront prefix list', () => {
+    const t = Template.fromStack(cf());
+    t.hasResourceProperties('AWS::ElasticLoadBalancingV2::LoadBalancer', { Scheme: 'internal' });
+    t.hasResourceProperties('AWS::CloudFront::VpcOrigin', { VpcOriginEndpointConfig: Match.objectLike({ HTTPPort: 80, OriginProtocolPolicy: 'http-only' }) });
+    // Only one listener (port 80, internal); nothing on 443 and nothing open to the internet.
+    const listeners = Object.values(t.findResources('AWS::ElasticLoadBalancingV2::Listener')).map((l) => (l as { Properties: { Port: number } }).Properties.Port);
+    expect(listeners).toEqual([80]);
+    const albSgId = Object.entries(t.findResources('AWS::EC2::SecurityGroup')).find(([, r]) => String((r as { Properties: { GroupDescription: string } }).Properties.GroupDescription).startsWith('Internal load balancer'))![0];
+    const albSg = t.findResources('AWS::EC2::SecurityGroup')[albSgId] as { Properties: Record<string, unknown> };
+    expect(albSg.Properties.SecurityGroupIngress).toBeUndefined();
+    const ingressToAlb = Object.values(t.findResources('AWS::EC2::SecurityGroupIngress'))
+      .map((r) => (r as { Properties: Record<string, unknown> }).Properties)
+      .filter((i) => JSON.stringify(i.GroupId).includes(albSgId));
+    expect(ingressToAlb).toHaveLength(1);
+    expect(ingressToAlb[0]).toMatchObject({ FromPort: 80, ToPort: 80, IpProtocol: 'tcp' });
+    expect(ingressToAlb[0]!.SourcePrefixListId).toBeDefined();
+    expect(ingressToAlb[0]!.CidrIp).toBeUndefined();
   });
 });

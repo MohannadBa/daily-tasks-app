@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { AuthLayout } from '@/components/auth-layout';
 import { Button, ErrorBox, Field, Input } from '@/components/ui';
 import { useT } from '@/lib/i18n';
+import { isSafeInternalPath } from '@/lib/safe-path';
 
 function LoginForm() {
   const router = useRouter();
@@ -39,7 +40,7 @@ function LoginForm() {
         return;
       }
       const next = params.get('next');
-      router.replace(next && next.startsWith('/') && !next.startsWith('//') ? next : '/');
+      router.replace(isSafeInternalPath(next) ? next : '/');
       router.refresh();
     } catch (err) {
       setError((err as Error).message);

@@ -8,6 +8,7 @@ import { I18nProvider, LOCALE_COOKIE, useT, type Locale } from '@/lib/i18n';
 import { syncPushSubscription } from '@/lib/push';
 import { PwaInit } from '@/lib/pwa';
 import { FeedbackProvider } from './feedback';
+import { isSafeInternalPath } from '@/lib/safe-path';
 
 export function Providers({ children, locale }: { children: ReactNode; locale: Locale }) {
   const [client] = useState(
@@ -42,7 +43,7 @@ function ServiceWorkerMessages() {
     const onMessage = (e: MessageEvent) => {
       const data = e.data as { type?: string; path?: string } | null;
       if (data?.type === 'dt:push') void qc.invalidateQueries({ queryKey: ['notifications'] });
-      if (data?.type === 'dt:navigate' && typeof data.path === 'string' && data.path.startsWith('/') && !data.path.startsWith('//')) {
+      if (data?.type === 'dt:navigate' && isSafeInternalPath(data.path)) {
         router.push(data.path);
         void qc.invalidateQueries({ queryKey: ['notifications'] });
         e.ports[0]?.postMessage('ok');

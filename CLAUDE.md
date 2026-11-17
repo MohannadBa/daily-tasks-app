@@ -67,7 +67,7 @@ Demo logins (seed, local only): `manager1@dailytasks.local` / `employee1@dailyta
 - Business time on the web: never compute it client-side; show `task.time` and `GET /tasks/:id/time` (`totals`, `provisional`) only.
 - Mobile UI: phones (< lg) get the top app bar + bottom tab bar + "More" sheet in `components/app-shell.tsx`, desktop keeps the sidebar. Use `min-h-11`/16px inputs for touch, card lists instead of tables below `md`, `env(safe-area-inset-*)` for fixed bars, and check 390 px width in EN and AR (no horizontal overflow).
 - Production requires HTTPS (CDK errors without a certificate/domain). Do not weaken that: phones need HTTPS for the service worker, install and push.
-- Web → API calls must forward the client IP with `clientIpHeaders(req)` (apps/web/src/lib/client-ip.ts); otherwise per-IP throttling lumps all users together.
+- Web → API calls must forward the client IP with `clientIpHeaders(req)` (apps/web/src/lib/client-ip.ts); otherwise per-IP throttling lumps all users together. Behind CloudFront (no custom domain) both `CLIENT_IP_PROXY_HOPS` (web) and `TRUST_PROXY_HOPS` (api) are 2 — keep them equal.
 - Do not claim production readiness until docs/REAL_DEVICE_TESTS.md is completed on physical devices.
 - Browser E2E: `pnpm --filter @dailytasks/web test:e2e` (Playwright with installed Chrome) against the running compose stack.
 - Tests: API integration tests in `apps/api/test/*.e2e-spec.ts` (real Postgres, fake S3); worker tests in `apps/worker/test`.

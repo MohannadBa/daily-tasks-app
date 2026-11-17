@@ -12,12 +12,15 @@ export const API_PREFIX = 'api/v1';
 /** Shared app configuration (used by main and by integration tests). */
 export function configureApp(app: INestApplication, env: ApiEnv) {
   app.setGlobalPrefix(API_PREFIX, { exclude: ['health'] });
-  app.use(helmet());
+  // HSTS: one year, this host only — no includeSubDomains/preload (the CloudFront address is a shared
+  // *.cloudfront.net domain; the custom domain's other hosts are not ours to pin). Same as the web app.
+  app.use(helmet({ hsts: { maxAge: 31_536_000, includeSubDomains: false, preload: false } }));
   const origins = env.CORS_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean);
   app.enableCors({ origin: origins.length ? origins : false, credentials: true });
   app.enableShutdownHooks();
   const http = app.getHttpAdapter().getInstance();
-  http.set('trust proxy', 1);
+  // 1 = behind the ALB; 2 = CloudFront → ALB (no custom domain). req.ip is then the real client.
+  http.set('trust proxy', env.TRUST_PROXY_HOPS);
   http.disable('x-powered-by');
 }
 

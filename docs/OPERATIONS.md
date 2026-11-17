@@ -65,6 +65,7 @@ Therefore: **an application rollback across a migration is only safe if the olde
 **Release rule:** take a manual RDS snapshot immediately before running the migrate task of any release that contains migrations; note its identifier in the release record.
 
 ## 4. Monitoring & alarms (CloudWatch → SNS e-mail)
+E-mail delivery requires `ALARM_EMAIL` (optional during restricted acceptance; set/change it as in PRODUCTION_PLAN.md §14). Without it, alarms are visible in the CloudWatch console only. In the CloudFront layout (no custom domain) the WAF alarm and WAF logs live in **us-east-1** (`DailyTasks-Edge`).
 | Alarm | Condition | First response |
 |---|---|---|
 | DbCpuAlarm | RDS CPU > 80 % for 3 periods | Check slow queries (Performance Insights in prod), report/list load |

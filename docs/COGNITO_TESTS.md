@@ -52,7 +52,7 @@ The test account must be allow-listed: run with `TEST_EMAIL=<allow-listed, not y
 | M5 | "Forgot password?" → enter e-mail → enter code + new password | Password set; sign-in works; **no second forced change** (fix verified) |
 | M6 | Expired temporary password (temp validity 7 days — test by asking Cognito support or skip) | Login refused; admin must reset |
 | M7 | Deactivate the account while it is signed in on a phone | Next action on the phone → signed out |
-| M8 | Check sender + authentication of the invitation (mail client "show original") | From `SES_FROM_ADDRESS`; DKIM=pass, SPF=pass for `ses-bounce.<domain>`; not in spam. While SES is in the sandbox only verified identities receive mail |
+| M8 | Check sender + authentication of the invitation (mail client "show original"). *During acceptance without a domain the sender is Cognito's default `no-reply@verificationemail.com` (≈50/day, may land in spam) — repeat M8 after SES is connected* | From `SES_FROM_ADDRESS`; DKIM=pass, SPF=pass for `ses-bounce.<domain>`; not in spam. While SES is in the sandbox only verified identities receive mail |
 
 ## Record (fill in on staging — do not pre-fill)
 | Date | Environment | Tester | C0–C9 result | M1–M8 result | Notes |

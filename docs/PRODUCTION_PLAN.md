@@ -6,6 +6,8 @@ prepared and verified offline: CDK synth of `DailyTasks-production` (125 resourc
 proof of database-certificate verification, and dry runs of `scripts/deploy-production.sh` against a
 stubbed AWS CLI.
 
+> **Decisions 2026-11-17 (this revision):** (1) **No custom domain yet** — production is served at the AWS-provided CloudFront domain `https://<id>.cloudfront.net` with a valid AWS certificate (the load balancer's own `*.elb.amazonaws.com` name cannot get a trusted certificate). (2) **No operations mailbox yet** — `ALARM_EMAIL` is optional; alarms fire but nobody is e-mailed until it is set. (3) Production stays in **restricted acceptance mode** for the whole acceptance phase; opening is blocked (CDK + script) until a custom domain with SES and a real operations mailbox exist.
+
 Because staging is skipped, the first production deployment **is** the acceptance environment: it
 starts in **restricted acceptance mode** (§4) and is opened to employees only after the launch checklist
 (§8) is signed off.
@@ -29,31 +31,34 @@ RDS, push on physical iPhone/Android, backup restore on RDS, alarms firing. Each
 | Secret names in the earlier docs (`dailytasks/<env>/…`) | **Corrected**: the stack names them `dailytasks-<env>/…` (e.g. `dailytasks-production/personal-data-key`) |
 
 ## 2. Production architecture (from the synthesized templates)
-**Stacks (one account):** eu-north-1 / Stockholm: `CDKToolkit` (bootstrap) · `DailyTasks-Registry` (3 ECR repos, immutable tags) · `DailyTasks-Mail` (SES identity) · `DailyTasks-production`. eu-west-1 / Ireland (backup region): `CDKToolkit` · `DailyTasks-DR` (KMS key for replicated backups + isolated restore-drill network; termination protection).
+**Stacks (one account):** eu-north-1 / Stockholm: `CDKToolkit` (bootstrap) · `DailyTasks-Registry` (3 ECR repos, immutable tags) · `DailyTasks-production` · `DailyTasks-Mail` (SES identity — **only once a custom domain exists**). us-east-1: `CDKToolkit` · `DailyTasks-Edge` (CloudFront web ACL, its logs and alarm; termination protection). eu-west-1 / Ireland (backup region): `CDKToolkit` · `DailyTasks-DR` (KMS key for replicated backups + isolated restore-drill network; termination protection).
 
 | Area | Resources in `DailyTasks-production` | Naming / isolation |
 |---|---|---|
 | Network | VPC 2 AZ, public/app/db subnets, **2 NAT gateways**, S3 gateway endpoint | tags `app=dailytasks`, `environment=production` |
-| Edge | ALB (HTTPS, TLS 1.3/1.2 policy, HTTP→HTTPS redirect, invalid headers dropped), ACM certificate (DNS-validated), Route 53 alias, **WAF web ACL** | WAF `dailytasks-production`, logs `aws-waf-logs-dailytasks-production` |
+| Edge (no custom domain — current, **restricted acceptance only**) | **CloudFront** distribution (`https://<id>.cloudfront.net`, default CloudFront certificate — **security policy TLSv1, not configurable**; **HTTPS-only on every behaviour: plain HTTP gets 403, no redirects**; host-only HSTS 1 year; HTTP/2+3; price class 200 incl. Middle East). Behaviours: `/api/v1/realtime*` (WebSocket), `/api/*` (incl. file/document download-URL endpoints), `/bff/*`, `/session/*` (sign-in) and the default (pages) are **not cached** and forward all viewer headers; only `/_next/static/*` is cached. → **VPC origin** (HTTP-only, port 80) → **internal** ALB (no public IP; security group admits only CloudFront's origin-facing prefix list on port 80; invalid headers dropped); **WAF on CloudFront** (`DailyTasks-Edge`, us-east-1) | WAF `dailytasks-production-edge`, logs `aws-waf-logs-dailytasks-production-edge` (us-east-1) |
+| Edge (after a custom domain — §13; **required before opening**) | Internet-facing ALB: HTTPS listener with ACM certificate and policy `ELBSecurityPolicy-TLS13-1-2-2021-06` (**TLS 1.2 minimum**, TLS 1.3 preferred); **port 80 answers 403 "HTTPS required" (no redirect)**; Route 53 alias, regional WAF | WAF `dailytasks-production` |
 | Compute | ECS cluster `dailytasks-production`: api 2–6 × 0.5 vCPU/1 GB, web 2–4 × 0.5/1 GB, worker 1–3 × 0.5/2 GB; migrate one-off; ECS Exec **off** | Cloud Map `dailytasks-production.local` |
 | Data | RDS PostgreSQL 16 `t4g.medium` **Multi-AZ**, 50→500 GB gp3, encrypted, `rds.force_ssl=1`, PITR 14 days, **automated backups replicated to eu-west-1 (14 days, Ireland KMS key) and kept if the instance is deleted**, backup 02:00–03:00 Riyadh, maintenance Fri 03:00 Riyadh, Performance Insights, deletion protection, final snapshot | secret `dailytasks-production/db` (RETAIN) |
 | Files | S3 attachments (private, BPA, SSE, TLS-only, versioned, CORS = app domain, reports expire 8 d, non-current 90 d), S3 ALB-log bucket | both RETAIN |
 | Messaging | SQS `dailytasks-production-events` + DLQ, EventBridge Scheduler group `dailytasks-production` | |
-| Identity | Cognito pool `dailytasks-production` (no self sign-up, email sign-in, optional TOTP MFA, SES e-mail, token revocation, **deletion protection**) | RETAIN |
+| Identity | Cognito pool `dailytasks-production` (no self sign-up, email sign-in, optional TOTP MFA, token revocation, **deletion protection**; e-mail from Cognito's default sender until SES; app client **without OAuth flows or callback URLs** — sign-in is API-only, no hosted UI) | RETAIN |
 | Secrets | `dailytasks-production/db`, `dailytasks-production/personal-data-key` (generated by Secrets Manager, RETAIN), `dailytasks-production/vapid-private-key` (created by the script) | |
-| Ops | 5 log groups (90 d, RETAIN), 15 alarms → SNS e-mail, Container Insights (enhanced) | |
+| Ops | 5 log groups (90 d, RETAIN), 14 alarms in eu-north-1 + 1 (WAF sign-in blocks) in us-east-1 → SNS e-mail **when `ALARM_EMAIL` is set**, Container Insights (enhanced) | |
 
-Environment injected into containers (non-secret): `NODE_ENV=production`, `AUTH_MODE=cognito`, `CORS_ORIGINS=https://<domain>`, `SWAGGER_ENABLED=false`, `ACCESS_MODE`, `ACCESS_ALLOWLIST`, `DB_SSL_CA_FILE=/app/certs/rds-global-bundle.pem`, `SCHEDULER_MODE=eventbridge`, `PUSH_ENABLED=true`. Secrets via Secrets Manager → ECS: DB fields (api, worker, migrate), `PERSONAL_DATA_KEY` (api only), `WEB_PUSH_VAPID_PRIVATE_KEY` (worker only). Production refuses to start with local auth, the dev personal-data key, the dev VAPID key, or restricted mode without an allow-list.
+Environment injected into containers (non-secret): `NODE_ENV=production`, `AUTH_MODE=cognito`, `CORS_ORIGINS=https://<id>.cloudfront.net` (later the custom domain), `TRUST_PROXY_HOPS`/`CLIENT_IP_PROXY_HOPS` = 2 behind CloudFront (1 with a custom domain), `SWAGGER_ENABLED=false`, `ACCESS_MODE`, `ACCESS_ALLOWLIST`, `DB_SSL_CA_FILE=/app/certs/rds-global-bundle.pem`, `SCHEDULER_MODE=eventbridge`, `PUSH_ENABLED=true`. Secrets via Secrets Manager → ECS: DB fields (api, worker, migrate), `PERSONAL_DATA_KEY` (api only), `WEB_PUSH_VAPID_PRIVATE_KEY` (worker only). Production refuses to start with local auth, the dev personal-data key, the dev VAPID key, or restricted mode without an allow-list.
 
 ## 3. Security configuration
-**Cognito + SES.** `DailyTasks-Mail` creates the SES domain identity for the company domain with Easy DKIM (3 CNAMEs) and a custom MAIL FROM `ses-bounce.<domain>` (MX + SPF) — additive records, the domain's existing mailboxes are untouched. Cognito sends invitations/reset codes from `SES_FROM_ADDRESS` through SES. A new SES account is in the **sandbox** (sends only to verified identities: fine for acceptance if testers use company-domain addresses); **request SES production access before opening** (AWS console → SES → Request production access; usually 24 h). Recommended: a DMARC record (`_dmarc.<domain>`) if the domain has none — not created automatically to avoid overwriting an existing policy.
-**WAF** (regional, on the ALB): Amazon IP reputation list, Known bad inputs, Core rule set (`SizeRestrictions_BODY` and `CrossSiteScripting_BODY` in COUNT: JSON bodies may legitimately be large or contain markup-like text; all output is escaped), rate limit 200 requests/5 min/IP on `/api/v1/auth/*` and `/session/*`, 6000/5 min/IP overall (an office NAT shares one IP), optional IP allow-list (`ALLOWED_CIDRS`). WAF logs redact `Authorization` and `Cookie`.
+**Cognito e-mail during acceptance (no domain):** Cognito's default sender (`no-reply@verificationemail.com`, about 50 e-mails/day) — enough for a handful of testers; messages may land in spam (check M1/M5). **Cognito callbacks:** none — the app never uses the hosted UI/OAuth (sign-in is `USER_PASSWORD_AUTH` through the API), so the app client has OAuth disabled and no callback URLs; changing the URL (CloudFront → custom domain) needs no Cognito change.
+**Cognito + SES (after a custom domain, required before opening).** `DailyTasks-Mail` creates the SES domain identity for the company domain with Easy DKIM (3 CNAMEs) and a custom MAIL FROM `ses-bounce.<domain>` (MX + SPF) — additive records, the domain's existing mailboxes are untouched. Cognito sends invitations/reset codes from `SES_FROM_ADDRESS` through SES. A new SES account is in the **sandbox** (sends only to verified identities: fine for acceptance if testers use company-domain addresses); **request SES production access before opening** (AWS console → SES → Request production access; usually 24 h). Recommended: a DMARC record (`_dmarc.<domain>`) if the domain has none — not created automatically to avoid overwriting an existing policy.
+**WAF** (CloudFront-scope in us-east-1 now; regional on the ALB once a custom domain is used — same rules): Amazon IP reputation list, Known bad inputs, Core rule set (`SizeRestrictions_BODY` and `CrossSiteScripting_BODY` in COUNT: JSON bodies may legitimately be large or contain markup-like text; all output is escaped), rate limit 200 requests/5 min/IP on `/api/v1/auth/*` and `/session/*`, 6000/5 min/IP overall (an office NAT shares one IP), optional IP allow-list (`ALLOWED_CIDRS`). WAF logs redact `Authorization` and `Cookie`.
+**Client IP behind CloudFront:** CloudFront appends the viewer's IP to `X-Forwarded-For`, the ALB then appends CloudFront's address; the API (`trust proxy` = 2) and the BFF (`CLIENT_IP_PROXY_HOPS` = 2) take the second-to-last entry, so client-supplied entries are still ignored and per-IP limits apply per user. The internal ALB is reachable only from CloudFront, so the header chain cannot be injected from elsewhere.
 **API rate limiting** (unchanged, per API task in memory): login/new-password/reset/change 10/min/IP, forgot 5/min, refresh 30/min, global 600/min. ⚠️ Launch-day risk: with many employees behind one office IP, the per-IP sign-in limits (×2 API tasks) may throttle a morning rush. Watch `RATE_LIMITED` responses during the first opening; raise limits only with evidence.
 **Database TLS**: `rds.force_ssl=1` on the server; clients verify the RDS certificate and host name (`sslaccept=strict` + bundled RDS CA). Proven locally (§7.2); production check scripted.
 **S3 / IAM least privilege** (from the template): API role = S3 read + put (no delete) + the 6 Cognito admin actions on this pool; worker = S3 put `reports/*` + delete, SQS, Scheduler on `schedule/dailytasks-production/*`, PassRole for the scheduler role only; execution roles read only their own secrets (web none). Wildcards only where AWS requires them. Pre-signed URLs only after authorization; type and size signed.
 **Encryption keys**: personal-data key generated **inside Secrets Manager** at deploy (nobody sees it until the escrow step), RETAIN; escrow to two custodians right after the first deploy; rotation with `rekey-personal` (OPERATIONS.md §8). **Correction to OPERATIONS.md §8 step 5:** an old key must be kept (escrow) as long as **any** backup encrypted under it exists — PITR (14 days) **and every manual snapshot** (pre-migration snapshots are kept until someone deletes them). Record in the escrow which key version covers which snapshot dates. VAPID key pair generated by the script in CloudShell memory, private key straight into Secrets Manager.
 **Backups**: automated PITR 14 days + Multi-AZ; **cross-region replication of automated backups to eu-west-1 (14 days, customer-managed key that cannot be disabled or deleted without a deliberate key-policy change)**; manual snapshot automatically before every migration, **copied to eu-west-1**; final snapshot on deletion; automated backups retained after instance deletion; in-region restore drill and Ireland DR drill required before launch (OPERATIONS.md §1b).
-**Monitoring**: 15 alarms (§6 of OPERATIONS.md) to the ops mailbox; ALB access logs; WAF metrics/logs; Performance Insights; RDS PostgreSQL logs.
+**Monitoring**: 15 alarms (§6 of OPERATIONS.md; the WAF one in us-east-1) — e-mailed only once `ALARM_EMAIL` is configured (§14); ALB access logs; WAF metrics/logs; Performance Insights; RDS PostgreSQL logs.
 **Not exposed**: Swagger off; only `/health`, `/api/v1/push/vapid-public-key` and the sign-in/password-recovery endpoints are unauthenticated; every admin endpoint requires a valid token + ADMIN role and (in acceptance mode) an allow-listed account.
 
 ## 4. Restricted acceptance mode (launch gate)
@@ -64,7 +69,7 @@ Environment injected into containers (non-secret): `NODE_ENV=production`, `AUTH_
 * Tests: `apps/api/test/access-mode.e2e-spec.ts` (5), Cognito contract test, CDK tests.
 
 **Changing the tester list:** edit `ACCESS_ALLOWLIST` → `scripts/deploy-production.sh diff` → `deploy` (rolling update, no downtime).
-**Opening access (after §8 is signed):**
+**Opening access (after §8 is signed)** — blocked by the CDK **and** the script unless production runs on a **verified custom domain with an ACM certificate and a TLS 1.2+ policy** (§13; the CloudFront default domain only supports the TLSv1 policy), with verified SES and a real operations mailbox (§14):
 1. SES production access granted (`check` shows "production access").
 2. `snapshot`.
 3. Set `ACCESS_MODE=open` in `.env.production` (allow-list ignored), clear `ALLOWED_CIDRS` if used.
@@ -96,22 +101,22 @@ cp .env.production.example .env.production && nano .env.production
 scripts/deploy-production.sh check                               # read-only readiness report
 
 # 2. Foundation
-scripts/deploy-production.sh bootstrap                           # CDKToolkit in eu-north-1 AND eu-west-1
+scripts/deploy-production.sh bootstrap                           # CDKToolkit in eu-north-1, eu-west-1 (backups) and us-east-1 (CloudFront WAF)
 scripts/deploy-production.sh registry                            # ECR repositories
 scripts/deploy-production.sh images                              # better on your PC (Docker): same command with .env.production there
-scripts/deploy-production.sh mail                                # SES identity + DKIM records
-scripts/deploy-production.sh check                               # repeat until "SES identity …: VERIFIED"
 scripts/deploy-production.sh dr                                  # DailyTasks-DR in eu-west-1 (backup KMS key + isolated drill network)
+scripts/deploy-production.sh edge                                # DailyTasks-Edge in us-east-1 (CloudFront WAF) — no custom domain yet
 scripts/deploy-production.sh vapid                               # Web Push keys (private → Secrets Manager)
+#   (mail / SES only once a custom domain exists — §13)
 
-# 3. Application (restricted mode)
+# 3. Application (restricted mode, CloudFront domain)
 scripts/deploy-production.sh diff                                # review every IAM / security-group change; STOP if it shows
 #    a REPLACEMENT of Database, DbCredentials, UserPool, Attachments, PersonalDataKey (data/identity loss)
-scripts/deploy-production.sh deploy                              # ≈ 30–40 min (Multi-AZ RDS, certificate)
-#    → confirm the SNS e-mail sent to ALARM_EMAIL
+scripts/deploy-production.sh deploy                              # ≈ 30–40 min (Multi-AZ RDS, CloudFront); prints the https://<id>.cloudfront.net URL
+#    → if ALARM_EMAIL is set: confirm the SNS e-mails (one from eu-north-1, one from us-east-1)
 scripts/deploy-production.sh migrate                             # automatic snapshot, then migrations; shows the log
 scripts/deploy-production.sh tls-check                           # positive + negative DB TLS proof
-scripts/deploy-production.sh admin                               # company + first admin; Cognito/SES invitation e-mail
+scripts/deploy-production.sh admin                               # company + first admin; Cognito invitation e-mail (default sender)
 #    → ESCROW the personal-data key now (OPERATIONS.md §8, secret dailytasks-production/personal-data-key)
 
 # 4. Verification (§7), then the launch checklist (§8)
@@ -127,7 +132,7 @@ CDK deploys through the bootstrap roles: the person needs `sts:AssumeRole` on `c
 ## 7. Verification procedures (record results here; nothing has been run on AWS)
 ### 7.1 Cognito (docs/COGNITO_TESTS.md)
 Allow-list two QA addresses first (e.g. `qa-cognito-1@<domain>`, plus a mailbox tester). Then
-`STAGING_URL=https://<domain> ADMIN_EMAIL=… ADMIN_PASSWORD=… TEST_EMAIL=qa-cognito-1@<domain> node scripts/cognito-staging-test.mjs` → C0–C9, and the mailbox steps M1–M8 (SES sender, Arabic/English invitation, reset code). Additional acceptance-mode check **R1**: an admin trying to create a non-allow-listed account gets "restricted acceptance mode"; **R2**: a non-allow-listed e-mail cannot sign in (generic error).
+`STAGING_URL=https://<id>.cloudfront.net ADMIN_EMAIL=… ADMIN_PASSWORD=… TEST_EMAIL=qa-cognito-1@<domain> node scripts/cognito-staging-test.mjs` → C0–C9, and the mailbox steps M1–M8 (during acceptance the sender is Cognito's default `no-reply@verificationemail.com` — check spam folders; repeat M1/M5/M8 after SES is connected). Additional acceptance-mode check **R1**: an admin trying to create a non-allow-listed account gets "restricted acceptance mode"; **R2**: a non-allow-listed e-mail cannot sign in (generic error).
 
 ### 7.2 Database TLS
 *Local proof (done 2026-11-17, API image `dailytasks-api:local`, Prisma + OpenSSL as in production, throwaway TLS Postgres):*
@@ -203,7 +208,8 @@ Request an Arabic and an English task PDF and an Arabic employee report: fonts (
 | Alb5xxAlarm | ≥ 20 target 5xx / 5 min | set-alarm-state | — |
 | ApiCpuAlarm, WebCpuAlarm, WorkerCpuAlarm | CPU > 85 % ×3 | set-alarm-state (×3) | — |
 | ApiUnhealthyHostsAlarm, WebUnhealthyHostsAlarm | ≥ 1 unhealthy target ×3 min | set-alarm-state (×2) | M-3 replaces a task; usually too short to fire — delivery test is the evidence |
-| WafSignInBlocksAlarm | > 50 blocked sign-in requests / 5 min | set-alarm-state | M-6 (also proves the WAF metric dimensions are right — if M-6 blocks but the alarm stays silent, fix the alarm) |
+| WafSignInBlocksAlarm (**us-east-1**, `DailyTasks-Edge`, its own SNS topic) | > 50 blocked sign-in requests / 5 min | set-alarm-state `--region us-east-1` | M-6 (also proves the WAF metric dimensions — CloudFront metrics have no Region dimension) |
+Until `ALARM_EMAIL` is configured, the delivery test can only show the state change in the CloudWatch console (no e-mail); repeat all delivery tests after §14.
 Record per alarm: e-mail received (time) ____.
 
 ## 8. Launch checklist (all ✅ before `ACCESS_MODE=open`)
@@ -226,6 +232,8 @@ Record per alarm: e-mail received (time) ____.
 | L15 | CloudTrail review of the pre-deployment identity calls done (§12) | Security | |
 | L16 | All 15 alarms delivered e-mail (§7.8 table) | Ops | |
 | L17 | Backup replication to eu-west-1 `replicating`; DR drill passed; lag and restore time recorded (§7.5) | Ops | |
+| L18 | **Mandatory:** custom domain connected with ACM certificate + TLS 1.2+ (§13), `curl --tls-max 1.1 https://<domain>` refused; testers re-installed the PWA and re-enabled notifications on the new address; M1/M5/M8 repeated with SES | Ops / QA | |
+| L19 | Operations mailbox configured (§14); both SNS subscriptions confirmed; all 15 alarm deliveries re-tested | Ops | |
 
 ## 9. Rollback procedures
 * **Failed deploy**: ECS circuit breaker restores the previous task definitions automatically; CloudFormation rolls the stack back on resource failures.
@@ -244,24 +252,26 @@ Record per alarm: e-mail received (time) ____.
 | Backups (PITR beyond DB size, manual pre-migration snapshots) | ~3–8 |
 | NAT gateways ×2 incl. data | ~68–72 |
 | ALB + LCUs | ~25–27 |
-| Public IPv4 (ALB ×2, NAT ×2) | ~15 |
-| WAF (web ACL $5 + 5 rules $5 + requests) + WAF logs | ~12–15 |
+| Public IPv4 (NAT ×2; the internal ALB has none) | ~7–8 |
+| CloudFront (always-free tier: 1 TB transfer + 10 M requests/month; expected usage far below) | ~0 |
+| WAF on CloudFront (web ACL $5 + 5 rules $5 + requests) + WAF logs (us-east-1) | ~12–15 |
 | CloudWatch (logs 90 d, enhanced Container Insights, 15 alarms) | ~20–35 |
 | S3 (files, ALB logs), ECR | ~4–6 |
 | Secrets Manager (3 secrets) | ~1.2 |
-| Route 53 zone + queries | ~0.6 |
+| Route 53 zone + queries (none until a custom domain; domain registration not included) | 0 (later ~0.6) |
 | SES (≈$0.10 per 1 000 e-mails), SQS, Scheduler, SNS, Cognito Lite (<10 000 MAU), ACM | ~1 |
 | Data transfer out to the internet (first 100 GB/month free; PWA assets are cached by the browser) | ~0–5 |
 | **Cross-region backups to eu-west-1**: inter-region transfer (≈ $0.02/GB: initial full copy + ≈ 1–3 GB/day of logs/snapshot changes), replicated backup storage in Ireland (≈ $0.095/GB-month for ≈ 10–40 GB), snapshot copies, KMS key ($1 + requests); DR VPC has no NAT/IGW (free) | ~3–8 |
-| **Total** | **≈ $370–415 / month** |
+| **Total (CloudFront layout)** | **≈ $360–405 / month** |
 | One-off: restore drill / DR drill (t4g.medium single-AZ for ~1 h, eu-north-1 / eu-west-1) | < $1 per drill |
 Savings later: Compute Savings Plan (−20–30 % Fargate), RDS Reserved Instance (−30–40 %). Set an AWS Budget alert at **$450** (actual + forecast). Main cost drivers: RDS Multi-AZ (~30 %), Fargate (~25 %), NAT gateways (~18 %, incl. $0.045-ish per GB processed — S3 traffic bypasses NAT via the gateway endpoint), ALB + IPv4 (~10 %).
 
 ## 11. Authorizations required (in order)
-1. Approve this plan, the AWS account, region **eu-north-1 (Stockholm)**, domain and hosted zone, ops mailbox, monthly budget (~$405).
-2. Approve CDK bootstrap (eu-north-1 **and** eu-west-1) + registry + pushing images.
+1. Approve this plan, the AWS account, region **eu-north-1 (Stockholm)**, serving at the CloudFront domain (no custom domain), no ops mailbox for now, monthly budget (~$405).
+2. Approve CDK bootstrap (eu-north-1, eu-west-1 **and us-east-1**) + registry + pushing images.
+2b. Approve the `DailyTasks-Edge` stack in us-east-1 (CloudFront WAF, ≈ $12–15/month).
 2a. Approve the `DailyTasks-DR` stack in eu-west-1 (customer-managed KMS key ≈ $1/month that cannot be deleted without a deliberate key-policy change; isolated VPC without cost).
-3. Approve the SES identity (DNS records added to the company zone) and the SES production-access request.
+3. *(Later, with a custom domain — §13)* Approve the SES identity (DNS records added to the company zone) and the SES production-access request.
 4. Approve creating the production VAPID secret.
 5. Approve `deploy` of `DailyTasks-production` in **restricted** mode with the named allow-list.
 6. Approve `migrate`, `tls-check`, `admin`, `restore-drill`, `dr-drill`.
@@ -282,6 +292,10 @@ Offline review of this plan, OPERATIONS.md, SECURITY_AUDIT.md, COGNITO_TESTS.md,
 | R7 | Restricted mode: `reset-password` (confirm code), admin reset and re-activation of an existing non-allow-listed account are not gated; and pushes still reach already-subscribed devices after re-closing | Low (no sign-in or API access is gained) | Documented (§4); gate them in a later release |
 | R8 | SES: bounces/complaints are not routed anywhere; the AWS production-access form asks for it | Low | Add SNS bounce/complaint notifications (or a configuration set) before requesting production access |
 | R9 | Cognito reset-code e-mail uses Cognito's default (English) verification template; only the invitation is bilingual | Low (UX) | Verify in M5; add a bilingual verification message later |
+| R11 | **TLS limitation (accurate statement):** a distribution that uses the default CloudFront certificate (`*.cloudfront.net`) automatically uses the **TLSv1** security policy; the minimum protocol version cannot be raised, so TLS 1.0/1.1 clients are **not** refused (modern browsers still negotiate TLS 1.3). **No TLS 1.2 minimum is enforced on the CloudFront address.** | Medium | **Implemented:** the CloudFront address is limited to restricted acceptance; opening (`ACCESS_MODE=open`) is refused by the CDK and the script unless production runs on a custom domain with an ACM certificate on the ALB policy `ELBSecurityPolicy-TLS13-1-2-2021-06` (TLS 1.2+). CDK tests: default certificate used as-is (no TLS-1.2 claim), open refused on CloudFront, allowed only with domain + TLS 1.2+ |
+| R12 | Plain HTTP must not reach the app, and redirects must not go through `http://` | Medium | **Implemented:** every CloudFront behaviour is `https-only` (CloudFront answers HTTP with **403**; no redirect for pages, API, sign-in, live updates or file endpoints); the custom-domain ALB answers port 80 with 403 too. Redirects: behind the VPC origin the app sees `http`, but the Next.js server already turns same-origin redirects into a **relative** `Location` (`/login?next=…`), so the browser stays on https — verified against the real server (`e2e/https-redirects.spec.ts`, including requests shaped like CloudFront → ALB with `X-Forwarded-Proto: http` and a `*.cloudfront.net` Host). Two alternatives were tried and rejected during this work: a hand-made relative `Location` (Next.js answers 500) and forcing the scheme from `CloudFront-Forwarded-Proto` (breaks the relative rewrite and leaks the internal bind address); the middleware documents why the redirect must keep the request origin. Host-only HSTS (1 year, no includeSubDomains/preload) from CloudFront, the web app and the API. Also fixed: post-login `next` accepted `/\evil.com` (browsers normalise it to `//evil.com` — open redirect); now rejected. Tests: CDK (HTTPS-only everywhere, no redirect anywhere, HSTS policy), middleware (relative redirects), safe-path (open-redirect forms), API e2e (HSTS header). AWS verification: §15 |
+| R13 | Private origin | Medium | **Checked offline:** AWS documentation lists **Europe (Stockholm) eu-north-1** as a supported Region for CloudFront VPC origins, and WebSocket support for VPC origins was announced (2026) for all commercial Regions that support VPC origins. CDK tests: internal ALB, single port-80 listener, only ingress = CloudFront origin-facing prefix list (no CIDR), HTTP-only VPC origin, no caching for realtime/API/BFF/sign-in/pages. **Still to prove on AWS** (§15): VPC origin creation, WebSocket upgrade and a long-lived (≥ 15 min) live-update connection through CloudFront — CloudFront's WebSocket idle behaviour is not explicitly documented; the API pings every 25 s, below the 30-s read-timeout default (configured 60 s) |
+| R14 | PWA installs, push subscriptions and cookies are bound to the origin: moving from the CloudFront address to a custom domain means testers re-install the app and re-enable notifications | Info | Part of §13 / L18 |
 | R10 | Plan errors corrected: §5 cross-reference, S3 test F6, TLS local-vs-AWS distinction, plaintext refusal test, full alarm test table, admin break-glass, launch checklist L13–L16 | — | Done in this document |
 
 ### Confirmed by the review
@@ -307,3 +321,39 @@ All are read-only identity calls; no resource was created, read or changed. Sinc
    CLI equivalent (for you, optional): `aws cloudtrail lookup-events --region eu-north-1 --lookup-attributes AttributeKey=EventName,AttributeValue=GetCallerIdentity --start-time 2026-11-16T08:00:00Z --end-time 2026-11-17T09:00:00Z --query 'Events[].[EventTime,Username,CloudTrailEvent]'`
 5. Event history keeps 90 days of management events free of charge; for durable evidence create an organization/account **trail** to an S3 bucket before the deployment (recommended anyway, §6).
 6. Hygiene: the deploying identity in CloudShell should be a dedicated role, not the long-lived access key on this PC; consider rotating that key after the deployment.
+
+## 13. Connecting a custom domain later (no purchase now)
+Prerequisites: a domain the company owns, delegated to a **Route 53 public hosted zone** in this account (registrar NS records → Route 53). Nothing here is done yet; each step needs authorization.
+1. Set in `.env.production`: `DOMAIN=tasks.<company-domain>`, `HOSTED_ZONE_NAME=<company-domain>` (optional `HOSTED_ZONE_ID`).
+2. `scripts/deploy-production.sh mail` → wait until `check` shows the SES identity **VERIFIED**; set `SES_FROM_ADDRESS=no-reply@<company-domain>`; request **SES production access** for eu-north-1 (AWS console → SES → Account dashboard; describe transactional invitations/reset codes and bounce handling).
+3. `snapshot`, then `diff` → expect: CloudFront distribution + VPC origin **removed**, ALB **replaced** (internal → internet-facing), ACM certificate + Route 53 alias + regional WAF **added**, `TRUST_PROXY_HOPS`/`CLIENT_IP_PROXY_HOPS` back to 1. **STOP** if the database, user pool, buckets or secrets show a replacement.
+4. `deploy` (rolling; a few minutes of unavailability while the ALB is replaced — do it in a quiet window). The new URL is `https://tasks.<company-domain>`.
+5. Testers: open the new address, **re-install** the PWA and **re-enable notifications** (old installs/subscriptions belong to the CloudFront origin); repeat the push and Cognito mailbox tests (L18). Old push subscriptions expire on their own (410 → deactivated).
+6. `DailyTasks-Edge` is then unused: keep it until the switch is confirmed, then it can be removed deliberately (termination protection must be turned off first; its WAF log group is retained).
+Alternative (not implemented): keep CloudFront and add the domain as an alternate name with an ACM certificate in us-east-1 — avoids the ALB replacement but needs a code change.
+
+## 14. Operations mailbox (alarm e-mail)
+* Configured only through `ALARM_EMAIL` in `.env.production` (→ CDK `alarmEmail`); nothing is hard-coded. Empty is allowed during restricted acceptance: alarms still change state (CloudWatch console) but nobody is e-mailed — `check` and the CDK warn about it.
+* Validation (script **and** CDK): must be a syntactically valid address; placeholder/reserved domains (`example.com/.org/.net`, `.test`, `.invalid`, `.local`, `localhost`) are refused, so delivery can never be "enabled" to a mailbox nobody reads.
+* Opening access (`ACCESS_MODE=open`) is refused without it.
+* **Setting or changing it later:** edit `ALARM_EMAIL` → `scripts/deploy-production.sh edge` (us-east-1 topic) and `deploy` (eu-north-1 topic) → click the two confirmation links AWS SNS e-mails to the address (subscriptions stay "pending" until confirmed) → re-run the alarm delivery tests (§7.8). Changing the address replaces the subscription; the old address stops receiving alarms after the deploy.
+
+## 15. AWS acceptance tests for the CloudFront layout (run after `deploy`; record results)
+`URL=https://<id>.cloudfront.net` (from `deploy-production.sh outputs`, `AppUrl`). Nothing here has been run.
+| # | Test | Command / action | Expected |
+|---|---|---|---|
+| CF1 | HTTP rejected (pages) | `curl -s -o /dev/null -w '%{http_code}\n' http://<id>.cloudfront.net/` | `403` (no `Location` header) |
+| CF2 | HTTP rejected (API, sign-in, live updates, files) | same command for `http://…/api/v1/push/vapid-public-key`, `http://…/session/login` (`-X POST`), `http://…/api/v1/realtime`, `http://…/bff/attachments/x/download-url` | `403` each; `curl -sI http://…` shows no redirect |
+| CF3 | HTTPS + HSTS | `curl -sI $URL/login` | `200`; `strict-transport-security: max-age=31536000` (no includeSubDomains/preload) |
+| CF4 | TLS reality (documents R11) | `openssl s_client -connect <id>.cloudfront.net:443 -servername <id>.cloudfront.net -tls1_1 </dev/null` | Handshake **may succeed** (TLSv1 policy) — record result; this is why opening requires a custom domain |
+| CF5 | Origin not public | `aws elbv2 describe-load-balancers --names <alb>` → `Scheme: internal`; the ALB DNS name resolves to private IPs only | internal / 10.x addresses |
+| CF6 | Security group | `aws ec2 describe-security-groups --group-ids <AlbSg>` | only inbound tcp/80 from `com.amazonaws.global.cloudfront.origin-facing` prefix list |
+| CF7 | Not cached | `curl -sI $URL/api/v1/push/vapid-public-key` twice; same for `/login` | `x-cache: Miss from cloudfront` every time; `/_next/static/...` second request `Hit from cloudfront` |
+| CF8 | Sign-in + cookies | Browser: sign in at `$URL` | `dt_access`/`dt_refresh` cookies `Secure; HttpOnly; SameSite=Lax`; signed-out deep link `$URL/tasks/<id>` → `307` with a **relative** `Location: /login?next=…` (never `http://`), then back to the task after sign-in |
+| CF9 | API through CloudFront | Create/approve a task (W1–W4) | all calls 2xx over https |
+| CF10 | WebSocket upgrade | DevTools → Network → WS: `wss://<id>.cloudfront.net/api/v1/realtime` | `101 Switching Protocols`; header **Live** dot in the app |
+| CF11 | Long-lived WebSocket | Keep the app open ≥ 15 min idle, then have another tester assign a task | update arrives live without reload; note any reconnects (DevTools) |
+| CF12 | Files | Upload an image and a PDF, open both (pre-signed S3 URLs) | works; S3 CORS origin is the CloudFront URL |
+| CF13 | Client IP / rate limit | 12 wrong passwords within a minute from one phone | the 11th+ get `429` for that phone only — another device on a different network can still sign in (proves per-client IPs behind CloudFront) |
+| CF14 | WAF on CloudFront | 250 rapid sign-in attempts from one IP | `403` from CloudFront after the limit; `WafSignInBlocksAlarm` (us-east-1) changes state |
+Record: date, tester, results ____.

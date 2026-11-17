@@ -119,6 +119,8 @@ export const apiEnvSchema = z
     ...commonEnv,
     PORT: z.coerce.number().int().positive().default(3000),
     CORS_ORIGINS: z.string().default(''),
+    /** Trusted proxies in front of the API: 1 = ALB (custom domain), 2 = CloudFront → ALB. */
+    TRUST_PROXY_HOPS: z.coerce.number().int().min(1).max(3).default(1),
     AUTH_MODE: z.enum(['local', 'cognito']).default('local'),
     /** Required in local auth mode. Must be long and random. */
     JWT_SECRET: z.string().optional(),
